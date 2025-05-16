@@ -20,25 +20,25 @@ SAMPLE_QUERIES = [
     "How can I join OSGeo?",
     "Who founded OSGeo?",
     "What is the OSGeo foundation?",
-    
+
     # Project-related questions
     "What is QGIS?",
     "How to contribute to GDAL?",
     "Tell me about MapServer",
     "What is GeoServer?",
-    
+
     # Event-related questions
     "When was FOSS4G 2010?",
     "Where was FOSS4G 2019 held?",
     "What is a code sprint?",
     "Tell me about past OSGeo events",
-    
+
     # Governance questions
     "Who is on the OSGeo board?",
     "How are OSGeo elections conducted?",
     "What committees exist in OSGeo?",
     "How is OSGeo funded?",
-    
+
     # Technical questions
     "What is a GIS?",
     "What is open source geospatial?",
@@ -104,15 +104,16 @@ SEARCH_APPROACHES = {
         "description": "Fuzzy search using trigram similarity",
         "query": """
             SELECT p.title, p.url, pc.chunk_text, 
-                   similarity(pc.chunk_text, %s) AS rank
+                similarity(pc.chunk_text, %s) AS rank
             FROM pages p
             JOIN page_chunks pc ON p.id = pc.page_id
-            WHERE pc.chunk_text % %s
+            WHERE similarity(pc.chunk_text, %s) > 0.3
             ORDER BY rank DESC
             LIMIT 5
         """
     }
 }
+
 
 def get_db_connection():
     """Connect to the PostgreSQL database."""
@@ -125,7 +126,7 @@ def get_db_connection():
             "password": os.getenv("DB_PASSWORD", "postgres"),
             "port": os.getenv("DB_PORT", "5432")
         }
-        
+
         # Connect to the database
         conn = psycopg2.connect(**db_params)
         conn.autocommit = True
@@ -134,25 +135,29 @@ def get_db_connection():
         print(f"Error connecting to PostgreSQL database: {e}")
         sys.exit(1)
 
+
 def prepare_query_for_tsquery(query):
     """Prepare a natural language query for tsquery format."""
     # Convert to lowercase and remove punctuation
     query = query.lower().replace('?', '').replace('.', '').replace(',', '')
-    
+
     # Remove common stopwords that tsquery would ignore anyway
-    stopwords = {'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'to', 'in', 'on', 'at', 'by', 'of', 'for', 'with'}
+    stopwords = {'a', 'an', 'the', 'is', 'are', 'was', 'were',
+                 'be', 'to', 'in', 'on', 'at', 'by', 'of', 'for', 'with'}
     words = [word for word in query.split() if word not in stopwords]
-    
+
     # Connect with & for AND operations
     return ' & '.join(words)
+
 
 def count_query_terms_in_result(query, result):
     """Count how many query terms are present in a result."""
     query_terms = set(query.lower().replace('?', '').replace('.', '').split())
     result_text = result["chunk_text"].lower()
-    
+
     count = sum(1 for term in query_terms if term in result_text)
     return count / len(query_terms) if query_terms else 0
+
 
 def run_search_query(conn, approach, query):
     """Run a search query using the specified approach."""
@@ -161,33 +166,39 @@ def run_search_query(conn, approach, query):
             # Handle different parameter requirements for different query types
             if approach == "basic_tsquery":
                 tsquery = prepare_query_for_tsquery(query)
-                cur.execute(SEARCH_APPROACHES[approach]["query"], (tsquery, tsquery))
+                cur.execute(SEARCH_APPROACHES[approach]
+                            ["query"], (tsquery, tsquery))
             elif approach == "category_boosted":
                 # Need to extract a key term for category matching
                 key_terms = [w for w in query.lower().split() if len(w) > 3]
                 key_term = key_terms[0] if key_terms else query.split()[0]
-                cur.execute(SEARCH_APPROACHES[approach]["query"], (query, key_term, query))
+                cur.execute(SEARCH_APPROACHES[approach]
+                            ["query"], (query, key_term, query))
             elif approach == "fuzzy_trigram":
                 # Fuzzy trigram needs the query parameter twice
-                cur.execute(SEARCH_APPROACHES[approach]["query"], (query, query))
+                cur.execute(
+                    SEARCH_APPROACHES[approach]["query"], (query, query))
             else:
                 # Standard parameter passing for other query types
-                cur.execute(SEARCH_APPROACHES[approach]["query"], (query, query))
-            
+                cur.execute(
+                    SEARCH_APPROACHES[approach]["query"], (query, query))
+
             results = cur.fetchall()
-            
+
             # Convert to list of dictionaries
             results_list = []
             for row in results:
                 result = dict(row)
-                result["term_coverage"] = count_query_terms_in_result(query, result)
+                result["term_coverage"] = count_query_terms_in_result(
+                    query, result)
                 results_list.append(result)
-            
+
             return results_list
     except psycopg2.Error as e:
         print(f"Error executing search query '{approach}' for '{query}': {e}")
         return []
-        
+
+
 def evaluate_search_results(results, query):
     """Evaluate search results based on metrics."""
     if not results:
@@ -198,11 +209,11 @@ def evaluate_search_results(results, query):
             "avg_rank": 0,
             "execution_time_ms": 0
         }
-    
+
     # Calculate metrics
     avg_term_coverage = sum(r["term_coverage"] for r in results) / len(results)
     avg_rank = sum(float(r["rank"]) for r in results) / len(results)
-    
+
     return {
         "found_results": True,
         "result_count": len(results),
@@ -210,11 +221,12 @@ def evaluate_search_results(results, query):
         "avg_rank": avg_rank
     }
 
+
 def run_search_benchmark():
     """Run a benchmark comparing different search approaches."""
     conn = get_db_connection()
     results = {}
-    
+
     # Enable pg_trgm extension if needed for fuzzy search
     try:
         with conn.cursor() as cur:
@@ -224,33 +236,35 @@ def run_search_benchmark():
         # Remove trigram search if extension not available
         if "fuzzy_trigram" in SEARCH_APPROACHES:
             del SEARCH_APPROACHES["fuzzy_trigram"]
-    
+
     for query in SAMPLE_QUERIES:
         print(f"\nTesting query: '{query}'")
         query_results = {}
-        
+
         for approach_name, approach_info in SEARCH_APPROACHES.items():
             print(f"  Running {approach_name} search...")
-            
+
             start_time = time.time()
             search_results = run_search_query(conn, approach_name, query)
             execution_time = (time.time() - start_time) * 1000  # Convert to ms
-            
+
             evaluation = evaluate_search_results(search_results, query)
             evaluation["execution_time_ms"] = execution_time
-            
+
             query_results[approach_name] = {
                 "results": search_results,
                 "evaluation": evaluation
             }
-            
-            print(f"    Found {len(search_results)} results in {execution_time:.1f}ms")
+
+            print(
+                f"    Found {len(search_results)} results in {execution_time:.1f}ms")
             print(f"    Term coverage: {evaluation['avg_term_coverage']:.2f}")
-        
+
         results[query] = query_results
-    
+
     conn.close()
     return results
+
 
 def generate_report(results):
     """Generate a report comparing the performance of search approaches."""
@@ -261,16 +275,20 @@ def generate_report(results):
         "avg_exec_time": [],
         "success_rate": []
     } for approach in SEARCH_APPROACHES.keys()}
-    
+
     # Collect metrics for each approach
     for query, query_results in results.items():
         for approach, data in query_results.items():
             eval_data = data["evaluation"]
-            approach_metrics[approach]["avg_term_coverage"].append(eval_data["avg_term_coverage"])
-            approach_metrics[approach]["avg_result_count"].append(eval_data["result_count"])
-            approach_metrics[approach]["avg_exec_time"].append(eval_data["execution_time_ms"])
-            approach_metrics[approach]["success_rate"].append(1 if eval_data["found_results"] else 0)
-    
+            approach_metrics[approach]["avg_term_coverage"].append(
+                eval_data["avg_term_coverage"])
+            approach_metrics[approach]["avg_result_count"].append(
+                eval_data["result_count"])
+            approach_metrics[approach]["avg_exec_time"].append(
+                eval_data["execution_time_ms"])
+            approach_metrics[approach]["success_rate"].append(
+                1 if eval_data["found_results"] else 0)
+
     # Calculate averages
     summary = {}
     for approach, metrics in approach_metrics.items():
@@ -280,41 +298,41 @@ def generate_report(results):
             "avg_exec_time": sum(metrics["avg_exec_time"]) / len(SAMPLE_QUERIES),
             "success_rate": sum(metrics["success_rate"]) / len(SAMPLE_QUERIES) * 100
         }
-    
+
     # Create a DataFrame for easier visualization
     df = pd.DataFrame(summary).T
-    
+
     # Plot the results
     fig, axs = plt.subplots(2, 2, figsize=(15, 10))
-    
+
     # Term coverage
     axs[0, 0].bar(df.index, df["avg_term_coverage"], color='blue', alpha=0.7)
     axs[0, 0].set_title('Average Term Coverage')
     axs[0, 0].set_ylim(0, 1)
     axs[0, 0].set_xticklabels(df.index, rotation=45, ha='right')
-    
+
     # Result count
     axs[0, 1].bar(df.index, df["avg_result_count"], color='green', alpha=0.7)
     axs[0, 1].set_title('Average Result Count')
     axs[0, 1].set_xticklabels(df.index, rotation=45, ha='right')
-    
+
     # Execution time
     axs[1, 0].bar(df.index, df["avg_exec_time"], color='red', alpha=0.7)
     axs[1, 0].set_title('Average Execution Time (ms)')
     axs[1, 0].set_xticklabels(df.index, rotation=45, ha='right')
-    
+
     # Success rate
     axs[1, 1].bar(df.index, df["success_rate"], color='purple', alpha=0.7)
     axs[1, 1].set_title('Success Rate (%)')
     axs[1, 1].set_ylim(0, 100)
     axs[1, 1].set_xticklabels(df.index, rotation=45, ha='right')
-    
+
     plt.tight_layout()
     plot_path = Path('postgres_search_comparison.png')
     plt.savefig(plot_path)
     print(f"\nPlot saved to {plot_path.absolute()}")
     plt.close()
-    
+
     # Print summary
     print("\nSearch Approach Performance Summary:")
     for approach, metrics in sorted(summary.items(), key=lambda x: x[1]["avg_term_coverage"], reverse=True):
@@ -323,23 +341,25 @@ def generate_report(results):
         print(f"    Result Count: {metrics['avg_result_count']:.1f}")
         print(f"    Execution Time: {metrics['avg_exec_time']:.1f}ms")
         print(f"    Success Rate: {metrics['success_rate']:.1f}%")
-    
+
     # Save detailed results as JSON for later analysis
     with open("postgres_search_results.json", "w") as f:
         # Convert any non-serializable objects to strings
         serializable_results = json.dumps(results, default=str, indent=2)
         f.write(serializable_results)
-    
+
     # Sample result display for the best approach
-    best_approach = max(summary.items(), key=lambda x: x[1]["avg_term_coverage"])[0]
+    best_approach = max(
+        summary.items(), key=lambda x: x[1]["avg_term_coverage"])[0]
     print(f"\nSample Results from Best Approach ({best_approach}):")
-    
+
     # Find a query that had good results
     for query in SAMPLE_QUERIES:
         sample_results = results[query][best_approach]["results"]
         if sample_results:
             print(f"Query: '{query}'")
-            for i, result in enumerate(sample_results[:2]):  # Show top 2 results
+            # Show top 2 results
+            for i, result in enumerate(sample_results[:2]):
                 print(f"  Result {i+1}:")
                 print(f"    Title: {result['title']}")
                 print(f"    URL: {result['url']}")
@@ -348,15 +368,17 @@ def generate_report(results):
                 print(f"    Rank Score: {float(result['rank']):.4f}")
             break
 
+
 def main():
     """Run the PostgreSQL search analysis."""
     print("=== PostgreSQL Search Analysis ===")
     print("Testing actual database search performance...")
-    
+
     benchmark_results = run_search_benchmark()
     generate_report(benchmark_results)
-    
+
     print("\nAnalysis complete!")
+
 
 if __name__ == "__main__":
     main()
