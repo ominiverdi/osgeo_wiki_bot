@@ -3,7 +3,7 @@ import psycopg2
 import psycopg2.extras
 from contextlib import contextmanager
 
-from ..config import settings
+from mcp_server.config import settings
 
 def get_connection():
     """Create a new database connection."""

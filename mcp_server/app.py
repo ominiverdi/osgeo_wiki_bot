@@ -5,8 +5,8 @@ from typing import Dict, List, Any, Optional
 import logging
 import uuid
 
-from config import settings
-from db.connection import test_connection
+from mcp_server.config import settings
+from mcp_server.db.connection import test_connection
 from .db.queries import get_db_schema
 from .llm.ollama import OllamaClient
 from .handlers.context import create_context

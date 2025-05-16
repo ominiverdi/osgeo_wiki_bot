@@ -2,11 +2,11 @@
 from typing import Dict, List, Any, Optional, Tuple
 import logging
 
-from ..config import settings
-from ..db.queries import execute_search_query, execute_fallback_search, execute_category_boosted_search
-from ..llm.ollama import OllamaClient
-from ..utils.sql_parser import validate_sql, simplify_sql
-from ..utils.response import format_search_results
+from mcp_server.config import settings
+from mcp_server.db.queries import execute_search_query, execute_fallback_search, execute_category_boosted_search
+from mcp_server.llm.ollama import OllamaClient
+from mcp_server.utils.sql_parser import validate_sql, simplify_sql
+from mcp_server.utils.response import format_search_results
 from .context import ConversationContext, update_context_with_results
 
 logger = logging.getLogger(__name__)
