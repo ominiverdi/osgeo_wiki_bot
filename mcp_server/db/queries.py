@@ -30,13 +30,14 @@ async def execute_search_query(sql: str, params: Optional[Dict[str, Any]] = None
 async def execute_fallback_search(query: str, category: Optional[str] = None, limit: int = 5) -> List[Dict[str, Any]]:
     """Execute a fallback search using websearch_to_tsquery directly."""
     sql = """
-    SELECT DISTINCT p.id, p.title, p.url, pc.chunk_text
+    SELECT DISTINCT p.id, p.title, p.url, pc.chunk_text,
+           ts_rank(pc.tsv, websearch_to_tsquery('english', %s)) AS rank
     FROM pages p
     JOIN page_chunks pc ON p.id = pc.page_id
     """
     
     where_clauses = ["pc.tsv @@ websearch_to_tsquery('english', %s)"]
-    params = [query]
+    params = [query, query]  # First for WHERE, second for ts_rank
     
     # Add category filter if provided
     if category:
@@ -47,9 +48,8 @@ async def execute_fallback_search(query: str, category: Optional[str] = None, li
     # Combine where clauses
     sql += f"WHERE {' AND '.join(where_clauses)} "
     
-    # Add limit
-    sql += "ORDER BY ts_rank(pc.tsv, websearch_to_tsquery('english', %s)) DESC LIMIT %s"
-    params.append(query)  # Add query again for ts_rank
+    # Add order by and limit
+    sql += "ORDER BY rank DESC LIMIT %s"
     params.append(limit)
     
     return await execute_search_query(sql, params)

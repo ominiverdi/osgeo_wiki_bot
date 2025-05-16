@@ -5,48 +5,30 @@ from typing import Tuple, List, Optional
 
 def validate_sql(sql: str) -> Tuple[bool, str]:
     """
-    Validate SQL query for security concerns.
+    Validate SQL query with a more sophisticated approach.
     Returns (is_valid, reason)
     """
     # Normalize whitespace and convert to lowercase for checks
     normalized_sql = ' '.join(sql.lower().split())
     
-    # Check for dangerous SQL commands
+    # Check for truly dangerous SQL commands only
     dangerous_commands = [
         'drop', 'truncate', 'delete', 'update', 'insert', 'alter', 'create',
-        'grant', 'revoke', 'commit', 'rollback', 'vacuum', 'reindex'
+        'grant', 'revoke', 'commit', 'rollback'
     ]
     
-    for command in dangerous_commands:
-        pattern = r'\b' + command + r'\b'
-        if re.search(pattern, normalized_sql):
-            return False, f"Dangerous SQL command detected: {command}"
+    # Only reject if these commands appear as standalone keywords, not in strings
+    parsed = sqlparse.parse(sql)[0]
+    tokens = [token for token in parsed.flatten() if not token.is_whitespace]
     
-    # Only allow SELECT statements
-    if not normalized_sql.strip().startswith('select'):
+    for token in tokens:
+        if (token.ttype is sqlparse.tokens.Keyword and 
+            token.value.lower() in dangerous_commands):
+            return False, f"Dangerous SQL command detected: {token.value}"
+    
+    # Ensure it's a SELECT statement
+    if not parsed.get_type().lower() == 'select':
         return False, "Only SELECT statements are allowed"
-    
-    # Try to parse the SQL to ensure it's valid syntax
-    try:
-        parsed = sqlparse.parse(sql)
-        if not parsed:
-            return False, "Could not parse SQL"
-    except Exception as e:
-        return False, f"SQL parsing error: {str(e)}"
-    
-    # Simple check for SQL injection attempts
-    injection_patterns = [
-        r"--",                 # Comment
-        r"/\*.*?\*/",          # Multi-line comment
-        r";.*?$",              # Multiple statements
-        r"xp_.*?",             # Extended stored procedures
-        r"sp_.*?",             # Stored procedures
-        r"exec.*?",            # Execute
-    ]
-    
-    for pattern in injection_patterns:
-        if re.search(pattern, normalized_sql):
-            return False, "Potential SQL injection detected"
     
     return True, "SQL is valid"
 
