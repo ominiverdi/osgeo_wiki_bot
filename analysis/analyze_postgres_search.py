@@ -11,7 +11,7 @@ import json
 from dotenv import load_dotenv
 
 # Load environment variables from .env file if present
-load_dotenv()
+load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
 
 # Sample queries to test (same as before for comparison)
 SAMPLE_QUERIES = [
@@ -167,6 +167,9 @@ def run_search_query(conn, approach, query):
                 key_terms = [w for w in query.lower().split() if len(w) > 3]
                 key_term = key_terms[0] if key_terms else query.split()[0]
                 cur.execute(SEARCH_APPROACHES[approach]["query"], (query, key_term, query))
+            elif approach == "fuzzy_trigram":
+                # Fuzzy trigram needs the query parameter twice
+                cur.execute(SEARCH_APPROACHES[approach]["query"], (query, query))
             else:
                 # Standard parameter passing for other query types
                 cur.execute(SEARCH_APPROACHES[approach]["query"], (query, query))
@@ -184,7 +187,7 @@ def run_search_query(conn, approach, query):
     except psycopg2.Error as e:
         print(f"Error executing search query '{approach}' for '{query}': {e}")
         return []
-
+        
 def evaluate_search_results(results, query):
     """Evaluate search results based on metrics."""
     if not results:
