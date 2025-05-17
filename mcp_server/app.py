@@ -1,4 +1,4 @@
-# mcp_server/app.py (updated)
+# Update mcp_server/app.py
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
@@ -7,10 +7,9 @@ import uuid
 
 from mcp_server.config import settings
 from mcp_server.db.connection import test_connection
-from .db.queries import get_db_schema
-from .llm.ollama import OllamaClient
-from .handlers.context import create_context
-from .handlers.search import get_search_handler
+from mcp_server.llm.ollama import OllamaClient
+from mcp_server.handlers.context import create_context
+from mcp_server.handlers.search import get_search_handler
 
 # Configure logging
 logging.basicConfig(
@@ -34,9 +33,8 @@ class MCPResponse(BaseModel):
     message: MCPMessage
     context: Optional[Dict[str, Any]] = None
 
-# Initialize Ollama clients
-sql_model = OllamaClient(model=settings.SQL_MODEL)
-response_model = OllamaClient(model=settings.RESPONSE_MODEL)
+# Initialize Ollama client
+llm_client = OllamaClient(model=settings.LLM_MODEL)
 
 @app.on_event("startup")
 async def startup_event():
@@ -45,6 +43,10 @@ async def startup_event():
     try:
         version = test_connection()
         logger.info(f"Connected to database: {version}")
+        
+        # Initialize search handler
+        search_handler = get_search_handler(llm_client)
+        await search_handler.initialize()
     except Exception as e:
         logger.error(f"Database connection error: {e}")
 
@@ -68,15 +70,9 @@ async def mcp_endpoint(request: MCPRequest):
     if not context.conversation_id:
         context.conversation_id = str(uuid.uuid4())
     
-    # Add the user message to context
-    context.add_message("user", user_query)
-    
-    # Get database schema for the LLM
-    db_schema = await get_db_schema()
-    
     # Process the query using the search handler
-    search_handler = get_search_handler(sql_model, response_model)
-    response_text, _ = await search_handler.process_query(user_query, context, db_schema)
+    search_handler = get_search_handler(llm_client)
+    response_text, _ = await search_handler.process_query(user_query, context)
     
     # Return MCP-compliant response
     return MCPResponse(

@@ -8,90 +8,71 @@ from ..config import settings
 
 logger = logging.getLogger(__name__)
 
-def create_sql_generation_prompt(query: str, schema: str) -> str:
-    """Create a detailed prompt for SQL generation with rich examples."""
+def create_keyword_extraction_prompt(query: str, keyword_cloud: str, categories: list) -> str:
+    """Create a prompt for extracting search keywords from a user query."""
+    
+    # Format the categories as a readable list
+    categories_str = "\n".join([f"- {cat}" for cat in categories])
+    
     return f"""
-You are a PostgreSQL search expert for an OSGeo wiki chatbot. Your job is to create optimal search queries using PostgreSQL's full-text search capabilities.
+You are a search assistant for the OSGeo wiki. Extract the most effective search keywords from the user's query.
 
-DATABASE SCHEMA:
-{schema}
+OSGeo KEYWORD CLOUD:
+{keyword_cloud}
+
+MAIN WIKI CATEGORIES:
+{categories_str}
 
 USER QUERY: {query}
 
-FULL-TEXT SEARCH GUIDELINES:
-1. ALWAYS use `websearch_to_tsquery` instead of other tsquery functions for best results
-2. ALWAYS include multiple related search terms to improve coverage
-3. ALWAYS use proper ranking with `ts_rank(tsv, query)` ordered DESC
-4. PREFER combining text search with relevant category filtering when possible
-5. NEVER use category filtering alone without full-text search
-6. ALWAYS return at least title, url, and chunk_text from search results
-7. DO NOT use exact phrase matching or LIKE searches - use proper text search vectors
+Based on the user query, extract keywords that will lead to the most relevant search results.
+Return your response as a JSON object with the following structure:
+{{
+  "primary_keywords": ["most", "important", "terms"],
+  "secondary_keywords": ["supporting", "context", "terms"],
+  "categories": ["Relevant", "Categories", "To", "Filter"]
+}}
 
-EXAMPLE QUERIES:
+Primary keywords should be the main focus of the search (1-3 terms).
+Secondary keywords should provide context or related concepts (2-5 terms).
+Categories should match the wiki categories that might contain relevant content.
 
-Example 1: "What is OSGeo?"
-```sql
-SELECT p.title, p.url, pc.chunk_text, ts_rank(pc.tsv, websearch_to_tsquery('english', 'OSGeo foundation organization about mission purpose')) AS rank
-FROM pages p
-JOIN page_chunks pc ON p.id = pc.page_id
-WHERE pc.tsv @@ websearch_to_tsquery('english', 'OSGeo foundation organization about mission purpose')
-ORDER BY rank DESC
-LIMIT 5;
-```
-
-Example 2: "Who is on the OSGeo board?"
-```sql
-SELECT p.title, p.url, pc.chunk_text, ts_rank(pc.tsv, websearch_to_tsquery('english', 'OSGeo board directors members president officers')) AS rank
-FROM pages p
-JOIN page_chunks pc ON p.id = pc.page_id
-LEFT JOIN page_categories cat ON p.id = cat.page_id
-WHERE pc.tsv @@ websearch_to_tsquery('english', 'OSGeo board directors members president officers')
-  AND (cat.category_name = 'Board' OR cat.category_name = 'Elections' OR pc.tsv @@ websearch_to_tsquery('english', 'board governance'))
-ORDER BY rank DESC
-LIMIT 7;
-```
-
-Example 3: "How is OSGeo governed?"
-```sql
-SELECT p.title, p.url, pc.chunk_text, ts_rank(pc.tsv, websearch_to_tsquery('english', 'OSGeo governance structure board organization bylaws committees president')) AS rank
-FROM pages p
-JOIN page_chunks pc ON p.id = pc.page_id
-LEFT JOIN page_categories cat ON p.id = cat.page_id
-WHERE pc.tsv @@ websearch_to_tsquery('english', 'OSGeo governance structure board organization bylaws committees president')
-  AND (cat.category_name IN ('Board', 'Governance', 'Elections') OR pc.tsv @@ websearch_to_tsquery('english', 'board governance committee president chair'))
-ORDER BY 
-  CASE WHEN cat.category_name = 'Board' THEN 2.0 ELSE 1.0 END * rank DESC
-LIMIT 8;
-```
-
-Example 4: "What events does OSGeo organize?"
-```sql
-SELECT p.title, p.url, pc.chunk_text, ts_rank(pc.tsv, websearch_to_tsquery('english', 'OSGeo events conference FOSS4G organize sprint')) AS rank
-FROM pages p
-JOIN page_chunks pc ON p.id = pc.page_id
-LEFT JOIN page_categories cat ON p.id = cat.page_id
-WHERE pc.tsv @@ websearch_to_tsquery('english', 'OSGeo events conference FOSS4G organize sprint')
-  AND (cat.category_name IN ('Events', 'FOSS4G', 'Code Sprints', 'Past Events') OR pc.tsv @@ websearch_to_tsquery('english', 'event conference FOSS4G'))
-ORDER BY rank DESC
-LIMIT 5;
-```
-
-Example 5: "What projects are part of OSGeo?"
-```sql
-SELECT p.title, p.url, pc.chunk_text, ts_rank(pc.tsv, websearch_to_tsquery('english', 'OSGeo projects software incubation official')) AS rank
-FROM pages p
-JOIN page_chunks pc ON p.id = pc.page_id
-WHERE pc.tsv @@ websearch_to_tsquery('english', 'OSGeo projects software incubation official')
-ORDER BY rank DESC
-LIMIT 7;
-```
-
-Now create the optimal SQL query for the user's question about: {query}
-
-SQL:
-```sql
+JSON:
 """
 
+async def extract_keywords_from_query(client, query: str, keyword_cloud: str, categories: list) -> dict:
+    """Extract search keywords from a user query."""
+    
+    prompt = create_keyword_extraction_prompt(query, keyword_cloud, categories)
+    
+    result = await client.generate(
+        prompt=prompt,
+        temperature=0.3  # Low temperature for more deterministic output
+    )
+    
+    # Extract JSON from the response
+    try:
+        # Find JSON object in the response
+        json_match = re.search(r'(\{.*\})', result, re.DOTALL)
+        if json_match:
+            keywords_json = json.loads(json_match.group(1))
+            return keywords_json
+        else:
+            # Fallback if no JSON is found
+            return {
+                "primary_keywords": [query],
+                "secondary_keywords": [],
+                "categories": []
+            }
+    except Exception as e:
+        logger.error(f"Error parsing keyword extraction result: {e}")
+        # Simple fallback
+        return {
+            "primary_keywords": [query],
+            "secondary_keywords": [],
+            "categories": []
+        }
+        
 def create_context_aware_sql_prompt(query: str, schema: str, query_context: Dict[str, Any]) -> str:
     """Create a context-aware prompt for SQL generation."""
     # Format the context information

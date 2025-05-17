@@ -1,122 +1,136 @@
-# mcp_server/db/queries.py
 from typing import Dict, List, Any, Optional, Tuple
-import logging
+# Add these functions to mcp_server/db/queries.py
 
-from ..config import settings
-from .connection import get_cursor
-
-logger = logging.getLogger(__name__)
-
-async def execute_search_query(sql: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    """Execute a search query and return the results."""
-    try:
-        with get_cursor() as cursor:
-            if params:
-                cursor.execute(sql, params)
-            else:
-                cursor.execute(sql)
-            
-            results = cursor.fetchall()
-            # Return as list of dictionaries
-            return list(results)
-    except Exception as e:
-        logger.error(f"Error executing search query: {e}")
-        logger.error(f"SQL: {sql}")
-        if params:
-            logger.error(f"Params: {params}")
-        # Return empty list on error
-        return []
-
-async def execute_fallback_search(query: str, category: Optional[str] = None, limit: int = 5) -> List[Dict[str, Any]]:
-    """Execute a fallback search using websearch_to_tsquery directly."""
+async def get_keyword_cloud() -> str:
+    """Generate a keyword cloud from the most common terms in the wiki."""
+    
     sql = """
-    SELECT DISTINCT p.id, p.title, p.url, pc.chunk_text,
-           ts_rank(pc.tsv, websearch_to_tsquery('english', %s)) AS rank
-    FROM pages p
-    JOIN page_chunks pc ON p.id = pc.page_id
+    WITH term_counts AS (
+        SELECT 
+            word, 
+            COUNT(*) as count
+        FROM 
+            ts_stat('SELECT to_tsvector(''english'', chunk_text) FROM page_chunks')
+        WHERE 
+            length(word) > 3  -- Skip very short words
+            AND word NOT IN ('http', 'https', 'www', 'com', 'org', 'html')  -- Skip common URLs
+            AND NOT word ~ '^\d+$'  -- Skip pure numbers
+        GROUP BY 
+            word
+        ORDER BY 
+            count DESC
+        LIMIT 150
+    )
+    SELECT 
+        word,
+        GREATEST(1, LEAST(5, CEIL(LOG(2, count)))) as weight
+    FROM 
+        term_counts
+    ORDER BY 
+        count DESC;
     """
     
-    where_clauses = ["pc.tsv @@ websearch_to_tsquery('english', %s)"]
-    params = [query, query]  # First for WHERE, second for ts_rank
+    try:
+        results = await execute_search_query(sql)
+        
+        # Format as a weighted text cloud
+        cloud_terms = []
+        for result in results:
+            word = result.get("word")
+            weight = int(result.get("weight", 1))
+            # Repeat important words based on weight
+            cloud_terms.extend([word] * weight)
+        
+        # Shuffle slightly to avoid bias toward first terms
+        import random
+        random.shuffle(cloud_terms)
+        
+        return " ".join(cloud_terms)
+    except Exception as e:
+        logger.error(f"Error generating keyword cloud: {e}")
+        return ""
+
+async def get_top_categories() -> list:
+    """Get the most commonly used categories from the wiki."""
     
-    # Add category filter if provided
-    if category:
-        sql += "JOIN page_categories cat ON p.id = cat.page_id "
-        where_clauses.append("cat.category_name = %s")
-        params.append(category)
+    sql = """
+    SELECT 
+        category_name, 
+        COUNT(*) as count
+    FROM 
+        page_categories
+    WHERE 
+        category_name NOT IN ('Categories', 'Category')
+    GROUP BY 
+        category_name
+    ORDER BY 
+        count DESC
+    LIMIT 30;
+    """
     
-    # Combine where clauses
-    sql += f"WHERE {' AND '.join(where_clauses)} "
+    try:
+        results = await execute_search_query(sql)
+        return [result.get("category_name") for result in results]
+    except Exception as e:
+        logger.error(f"Error fetching top categories: {e}")
+        return []
+
+async def execute_keyword_search(keywords: dict, limit: int = 10) -> List[Dict[str, Any]]:
+    """Execute a search using the extracted keywords."""
     
-    # Add order by and limit
-    sql += "ORDER BY rank DESC LIMIT %s"
+    # Combine primary and secondary keywords
+    primary_keywords = keywords.get("primary_keywords", [])
+    secondary_keywords = keywords.get("secondary_keywords", [])
+    
+    # If no keywords were extracted, return empty results
+    if not primary_keywords and not secondary_keywords:
+        return []
+    
+    # Join the keywords with the OR operator for the search query
+    if primary_keywords and secondary_keywords:
+        # Weight primary keywords more heavily
+        search_query = " | ".join(primary_keywords + secondary_keywords)
+    elif primary_keywords:
+        search_query = " | ".join(primary_keywords)
+    else:
+        search_query = " | ".join(secondary_keywords)
+    
+    # Build SQL query with category boosting if applicable
+    categories = keywords.get("categories", [])
+    
+    sql = """
+    SELECT 
+        p.id, p.title, p.url, pc.chunk_text,
+        ts_rank(pc.tsv, websearch_to_tsquery('english', %s)) AS rank
+    FROM 
+        pages p
+    JOIN 
+        page_chunks pc ON p.id = pc.page_id
+    WHERE 
+        pc.tsv @@ websearch_to_tsquery('english', %s)
+    """
+    
+    params = [search_query, search_query]
+    
+    # Add category filtering if categories are present
+    if categories:
+        placeholders = ", ".join(["%s"] * len(categories))
+        sql += f"""
+        AND EXISTS (
+            SELECT 1 
+            FROM page_categories cat 
+            WHERE cat.page_id = p.id 
+            AND cat.category_name IN ({placeholders})
+        )
+        """
+        params.extend(categories)
+    
+    # Complete the query with order by and limit
+    sql += """
+    ORDER BY 
+        rank DESC
+    LIMIT %s
+    """
     params.append(limit)
     
     return await execute_search_query(sql, params)
-
-async def execute_category_boosted_search(query: str, limit: int = 5) -> List[Dict[str, Any]]:
-    """Execute a search with category boosting."""
-    sql = """
-    SELECT p.id, p.title, p.url, pc.chunk_text,
-           ts_rank(pc.tsv, websearch_to_tsquery('english', %s)) + 
-           CASE WHEN EXISTS (
-               SELECT 1 FROM page_categories pc2 
-               WHERE pc2.page_id = p.id 
-               AND lower(pc2.category_name) LIKE '%%' || lower(%s) || '%%'
-           ) THEN 0.5 ELSE 0 END AS rank
-    FROM pages p
-    JOIN page_chunks pc ON p.id = pc.page_id
-    LEFT JOIN page_categories pc2 ON p.id = pc2.page_id
-    WHERE pc.tsv @@ websearch_to_tsquery('english', %s)
-    GROUP BY p.id, p.title, p.url, pc.chunk_text
-    ORDER BY rank DESC
-    LIMIT %s
-    """
-    
-    # Extract potential category term (longest word)
-    terms = query.split()
-    category_term = max(terms, key=len) if terms else ""
-    
-    params = [query, category_term, query, limit]
-    return await execute_search_query(sql, params)
-
-async def get_db_schema() -> str:
-    """Get the database schema for the LLM."""
-    schema_query = """
-    SELECT 
-        table_name, 
-        column_name, 
-        data_type, 
-        column_default
-    FROM 
-        information_schema.columns
-    WHERE 
-        table_schema = 'public' AND
-        table_name IN ('pages', 'page_chunks', 'page_categories')
-    ORDER BY 
-        table_name, ordinal_position;
-    """
-    
-    try:
-        schema_info = await execute_search_query(schema_query)
-        
-        # Format schema as string
-        tables = {}
-        for col in schema_info:
-            if col['table_name'] not in tables:
-                tables[col['table_name']] = []
-            tables[col['table_name']].append(col)
-        
-        schema_str = ""
-        for table_name, columns in tables.items():
-            schema_str += f"Table: {table_name}\n"
-            schema_str += "Columns:\n"
-            for col in columns:
-                default = f" DEFAULT {col['column_default']}" if col['column_default'] else ""
-                schema_str += f"  - {col['column_name']} {col['data_type']}{default}\n"
-            schema_str += "\n"
-        
-        return schema_str
-    except Exception as e:
-        logger.error(f"Error fetching schema: {e}")
-        return "Error fetching schema"

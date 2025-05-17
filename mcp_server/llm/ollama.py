@@ -1,17 +1,10 @@
-# mcp_server/llm/ollama.py (updated)
+# mcp_server/llm/ollama.py
 import httpx
 from typing import Dict, List, Any, Optional
 
 from ..config import settings
-from .sql_gen import (
-    create_sql_generation_prompt, 
-    create_context_aware_sql_prompt,
-    extract_sql_from_response
-)
-from .response_gen import (
-    create_response_generation_prompt,
-    create_context_aware_response_prompt
-)
+from .keyword_extraction import create_keyword_extraction_prompt, extract_keywords_from_response
+from .response_gen import create_response_generation_prompt, create_context_aware_response_prompt
 
 class OllamaClient:
     def __init__(self, base_url: str = None, model: str = None):
@@ -52,46 +45,33 @@ class OllamaClient:
             result = response.json()
             return result["response"]
     
-    async def generate_sql(self, query: str, schema: str) -> str:
-        """Generate SQL from natural language query."""
-        prompt = create_sql_generation_prompt(query, schema)
+    async def extract_keywords(self, query: str, keyword_cloud: str, categories: list) -> dict:
+        """Extract keywords from a natural language query."""
+        prompt = create_keyword_extraction_prompt(query, keyword_cloud, categories)
         result = await self.generate(
             prompt=prompt,
-            model=settings.SQL_MODEL,
-            temperature=0.1  # Low temperature for more deterministic SQL
+            model=self.model,
+            temperature=0.3  # Low temperature for more deterministic output
         )
         
-        # Extract SQL from the result
-        return extract_sql_from_response(result)
-    
-    async def generate_sql_with_context(self, query: str, schema: str, query_context: Dict[str, Any]) -> str:
-        """Generate SQL from natural language query with conversation context."""
-        prompt = create_context_aware_sql_prompt(query, schema, query_context)
-        result = await self.generate(
-            prompt=prompt,
-            model=settings.SQL_MODEL,
-            temperature=0.1  # Low temperature for more deterministic SQL
-        )
+        return extract_keywords_from_response(result)
         
-        # Extract SQL from the result
-        return extract_sql_from_response(result)
-        
-    async def generate_response(self, query: str, sql_result: List[Dict[str, Any]]) -> str:
-        """Generate natural language response from SQL results."""
-        prompt = create_response_generation_prompt(query, sql_result)
+    async def generate_response(self, query: str, search_result: List[Dict[str, Any]]) -> str:
+        """Generate natural language response from search results."""
+        prompt = create_response_generation_prompt(query, search_result)
         return await self.generate(
             prompt=prompt,
-            model=settings.RESPONSE_MODEL,
+            model=self.model,
             temperature=0.7  # Higher temperature for more natural responses
         )
     
     async def generate_response_with_context(
-        self, query: str, sql_result: List[Dict[str, Any]], query_context: Dict[str, Any]
+        self, query: str, search_result: List[Dict[str, Any]], query_context: Dict[str, Any]
     ) -> str:
-        """Generate natural language response from SQL results with conversation context."""
-        prompt = create_context_aware_response_prompt(query, sql_result, query_context)
+        """Generate natural language response from search results with conversation context."""
+        prompt = create_context_aware_response_prompt(query, search_result, query_context)
         return await self.generate(
             prompt=prompt,
-            model=settings.RESPONSE_MODEL,
+            model=self.model,
             temperature=0.7  # Higher temperature for more natural responses
         )

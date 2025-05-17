@@ -1,33 +1,46 @@
-# mcp_server/handlers/search.py
+# Replace mcp_server/handlers/search.py with this implementation
 from typing import Dict, List, Any, Optional, Tuple
 import logging
 
 from mcp_server.config import settings
-from mcp_server.db.queries import execute_search_query, execute_fallback_search, execute_category_boosted_search
+from mcp_server.db.queries import execute_keyword_search, execute_fallback_search, get_keyword_cloud, get_top_categories
 from mcp_server.llm.ollama import OllamaClient
-from mcp_server.utils.sql_parser import validate_sql, simplify_sql
 from mcp_server.utils.response import format_search_results
 from .context import ConversationContext, update_context_with_results
 
 logger = logging.getLogger(__name__)
 
 class SearchHandler:
-    """Handler for search requests using LLM-to-SQL pipeline."""
+    """Handler for search requests using keyword extraction."""
     
-    def __init__(self, sql_model: OllamaClient, response_model: OllamaClient):
-        self.sql_model = sql_model
-        self.response_model = response_model
+    def __init__(self, llm_client: OllamaClient, response_model: OllamaClient = None):
+        self.llm_client = llm_client
+        self.response_model = response_model or llm_client
+        self.keyword_cloud = None
+        self.categories = None
+    
+    async def initialize(self):
+        """Initialize the handler with keyword cloud and categories."""
+        if self.keyword_cloud is None:
+            self.keyword_cloud = await get_keyword_cloud()
+            logger.info(f"Generated keyword cloud with {len(self.keyword_cloud.split())} terms")
+        
+        if self.categories is None:
+            self.categories = await get_top_categories()
+            logger.info(f"Retrieved {len(self.categories)} top categories")
     
     async def process_query(
         self, 
         query: str, 
-        context: ConversationContext,
-        db_schema: str
+        context: ConversationContext
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
-        Process a query through the LLM-to-SQL pipeline with fallbacks.
+        Process a query using keyword extraction and search.
         Returns (response_text, results)
         """
+        # Initialize if needed
+        await self.initialize()
+        
         # Get query-specific context
         query_context = context.get_context_for_query(query)
         is_followup = query_context.get("is_followup", False)
@@ -37,42 +50,21 @@ class SearchHandler:
         results = []
         
         try:
-            # 1. Generate SQL using LLM
-            if is_followup:
-                generated_sql = await self.sql_model.generate_sql_with_context(
-                    query, db_schema, query_context
-                )
-            else:
-                generated_sql = await self.sql_model.generate_sql(query, db_schema)
+            # 1. Extract keywords from query
+            keywords = await self.llm_client.extract_keywords(
+                query,
+                self.keyword_cloud,
+                self.categories
+            )
             
-            logger.debug(f"Generated SQL: {generated_sql}")
+            logger.info(f"Extracted keywords: {keywords}")
             
-            # 2. Validate the SQL
-            is_valid, validation_message = validate_sql(generated_sql)
+            # 2. Execute search with keywords
+            results = await execute_keyword_search(keywords)
             
-            if is_valid:
-                # 3. Execute the SQL
-                results = await execute_search_query(generated_sql)
-                
-                # 4. If no results, try simplified SQL
-                if not results:
-                    simplified_sql = simplify_sql(generated_sql)
-                    if simplified_sql != generated_sql:
-                        logger.debug(f"Using simplified SQL: {simplified_sql}")
-                        results = await execute_search_query(simplified_sql)
-                
-                # 5. If still no results, try fallback search
-                if not results:
-                    logger.debug("Using fallback search")
-                    results = await execute_fallback_search(query)
-                
-                # 6. If still no results, try category-boosted search
-                if not results:
-                    logger.debug("Using category-boosted search")
-                    results = await execute_category_boosted_search(query)
-            else:
-                # If SQL is invalid, skip to fallback
-                logger.warning(f"Invalid SQL: {validation_message}")
+            # 3. If no results, try with simpler approach (just use the query directly)
+            if not results:
+                logger.info("No results with keyword search, trying fallback")
                 results = await execute_fallback_search(query)
             
             # Update context with results before generating response
@@ -103,9 +95,9 @@ class SearchHandler:
 # Create a singleton instance
 search_handler = None
 
-def get_search_handler(sql_model: OllamaClient, response_model: OllamaClient) -> SearchHandler:
+def get_search_handler(llm_client: OllamaClient, response_model: OllamaClient = None) -> SearchHandler:
     """Get or create the search handler singleton."""
     global search_handler
     if search_handler is None:
-        search_handler = SearchHandler(sql_model, response_model)
+        search_handler = SearchHandler(llm_client, response_model)
     return search_handler

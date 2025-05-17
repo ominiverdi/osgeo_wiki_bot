@@ -22,8 +22,7 @@ class Settings:
     
     # Ollama settings
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
-    SQL_MODEL = os.getenv("SQL_MODEL")
-    RESPONSE_MODEL = os.getenv("RESPONSE_MODEL")
+    LLM_MODEL = os.getenv("LLM_MODEL")
     
     # Server settings
     HOST = os.getenv("HOST", "0.0.0.0")
@@ -37,7 +36,6 @@ class Settings:
 settings = Settings()
 
 # Debug output to verify settings are loaded correctly
-print(f"Using SQL model: {settings.SQL_MODEL}")
-print(f"Using Response model: {settings.RESPONSE_MODEL}")
+print(f"Using LLM model: {settings.LLM_MODEL}")
 print(f"Database: {settings.DB_USER}@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}")
 print(f"Debug mode: {settings.DEBUG}")
