@@ -17,6 +17,8 @@ class MatrixConfig:
     HOMESERVER_URL = os.getenv("MATRIX_HOMESERVER_URL", "https://matrix.org")
     ACCESS_TOKEN = os.getenv("MATRIX_ACCESS_TOKEN")
     USER_ID = os.getenv("MATRIX_USER_ID")
+    
+    # Get room IDs as a list
     @property
     def ROOM_IDS(self):
         room_ids = os.getenv("MATRIX_ROOM_IDS", "").split(",")
@@ -40,7 +42,9 @@ class MatrixConfig:
         if not cls.USER_ID:
             missing.append("MATRIX_USER_ID")
         
-        if not cls.ROOM_IDS or not cls.ROOM_IDS[0]:
+        # Fix this line - we need to get the property value
+        room_ids = cls().ROOM_IDS  # Create an instance to access the property
+        if not room_ids:
             missing.append("MATRIX_ROOM_IDS")
         
         if missing:
@@ -58,7 +62,6 @@ if __name__ != "__main__":  # Don't validate when run directly
     except ValueError as e:
         print(f"Configuration error: {e}")
         print("Please set the required environment variables in the .env file.")
-
 
 # Print loaded configuration for debugging
 print(f"Matrix configuration:")

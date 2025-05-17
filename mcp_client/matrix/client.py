@@ -6,6 +6,7 @@ import json
 import httpx
 from typing import Dict, List, Any, Optional
 import re
+import time
 
 # Try different import approaches
 try:
@@ -39,34 +40,38 @@ class MatrixClient:
         self.rooms = config.ROOM_IDS
         self.handler = MessageHandler(config.MCP_SERVER_URL)
         
+        # Track the bot's start time (in milliseconds for compatibility with Matrix timestamps)
+        self.start_time = int(time.time() * 1000)
+        logger.info(f"Bot started at timestamp: {self.start_time}")
+        
         # Set up event callbacks
         self.client.add_event_callback(self.message_callback, RoomMessageText)
         self.client.add_event_callback(self.invite_callback, InviteEvent)
-    
-    # In message_callback method in client.py
-    async def message_callback(self, room, event):
-        """Process incoming room messages."""
-        # Skip own messages
-        if event.sender == config.USER_ID:
-            return
+
+    async def run(self):
+        """Run the client."""
+        try:
+            # Connect to homeserver
+            logger.info(f"Connecting to {config.HOMESERVER_URL} as {config.USER_ID}")
+            
+            # Join rooms
+            await self.join_rooms()
+            
+            # Start sync loop
+            logger.info("Starting sync loop")
+            await self.client.sync_forever(timeout=30000)
         
-        # Only process messages in configured rooms
-        if room.room_id not in self.rooms:
-            logger.debug(f"Ignoring message in non-configured room: {room.room_id}")
-            return
+        except KeyboardInterrupt:
+            logger.info("Received keyboard interrupt. Shutting down...")
+        except Exception as e:
+            logger.error(f"Error in Matrix client: {e}")
+            return 1
+        finally:
+            # Close the client properly
+            await self.client.close()
         
-        # Process message using handler
-        is_mentioned, response = await self.handler.process_message(
-            room.room_id,
-            event.sender,
-            event.body,
-            event.event_id
-        )
-        
-        # Only respond if explicitly mentioned
-        if is_mentioned and response:
-            await self.send_message(room.room_id, response)
-    
+        return 0
+
     async def invite_callback(self, room, event):
         """Handle room invitations."""
         logger.info(f"Received invite to room {room.room_id} from {event.sender}")
@@ -83,14 +88,102 @@ class MatrixClient:
                     "To ask a question, mention me with my full ID: @osgeo-wiki-bot:matrix.org followed by your question."
                 )
                 await self.send_message(room.room_id, welcome_msg)
-            except JoinError as e:
+            except Exception as e:
                 logger.error(f"Failed to join room {room.room_id}: {e}")
         else:
             logger.info(f"Ignoring invite to room {room.room_id} (not in configured room list)")
     
+    async def join_rooms(self):
+        """Join all configured rooms."""
+        logger.info(f"Configured to join these rooms: {self.rooms}")
+        
+        for room_id in self.rooms:
+            if not room_id:
+                continue
+                
+            try:
+                logger.info(f"Joining room {room_id}")
+                await self.client.join(room_id)
+                await asyncio.sleep(1)  # Small delay between joins
+            except Exception as e:
+                logger.error(f"Failed to join room {room_id}: {e}")
+                
+    async def message_callback(self, room, event):
+        """Process incoming room messages."""
+        # Skip own messages
+        if event.sender == config.USER_ID:
+            return
+        
+        # Only process messages in configured rooms
+        if room.room_id not in self.rooms:
+            logger.debug(f"Ignoring message in non-configured room: {room.room_id}")
+            return
+        
+        # Skip messages older than the bot's start time
+        if hasattr(event, 'server_timestamp') and event.server_timestamp < self.start_time:
+            logger.debug(f"Skipping message from before bot start: {event.server_timestamp} < {self.start_time}")
+            return
+        
+        # Extract the actual query from the message
+        message_body = event.body
+        query = message_body
+        
+        # If the message starts with the bot's display name followed by colon
+        if message_body.lower().startswith("osgeo_wiki_bot:"):
+            query = message_body.split(":", 1)[1].strip()
+            logger.debug(f"Extracted query from display name mention: '{query}'")
+            is_mentioned = True
+        # If the message contains the bot's Matrix ID
+        elif config.USER_ID in message_body:
+            parts = message_body.split(config.USER_ID, 1)
+            if len(parts) > 1:
+                query = parts[1].strip()
+                # Remove leading colon if present
+                if query.startswith(":"):
+                    query = query[1:].strip()
+                logger.debug(f"Extracted query from Matrix ID mention: '{query}'")
+                is_mentioned = True
+        # Check for mentions in the source if available
+        elif hasattr(event, 'source') and isinstance(event.source, dict):
+            content = event.source.get('content', {})
+            if 'm.mentions' in content and 'user_ids' in content['m.mentions']:
+                if config.USER_ID in content['m.mentions']['user_ids']:
+                    # Extract after display name with colon if present
+                    if ":" in message_body:
+                        query = message_body.split(":", 1)[1].strip()
+                    logger.debug(f"Extracted query from m.mentions: '{query}'")
+                    is_mentioned = True
+        else:
+            is_mentioned = False
+        
+        # Process the extracted query
+        if is_mentioned and query:
+            logger.debug(f"Processing query: '{query}'")
+            # Process message using handler
+            _, response = await self.handler.process_message(
+                room.room_id,
+                event.sender,
+                query,  # Send just the query part, not the whole message
+                event.event_id
+            )
+            
+            # Only respond if we have a response
+            if response:
+                await self.send_message(room.room_id, response)
+    
     async def send_message(self, room_id: str, message: str):
         """Send a message to a room."""
         try:
+            # Process message to ensure URLs are formatted as links
+            formatted_body = self._format_markdown(message)
+            
+            # Make URLs clickable by wrapping them in anchor tags if not already
+            url_pattern = r'(https?://[^\s<]+)'
+            formatted_body = re.sub(url_pattern, 
+                                 lambda m: f'<a href="{m.group(0)}">{m.group(0)}</a>' 
+                                 if '<a href="' not in m.group(0) else m.group(0), 
+                                 formatted_body)
+            
             await self.client.room_send(
                 room_id=room_id,
                 message_type="m.room.message",
@@ -98,7 +191,7 @@ class MatrixClient:
                     "msgtype": "m.text",
                     "format": "org.matrix.custom.html",
                     "body": message,
-                    "formatted_body": self._format_markdown(message)
+                    "formatted_body": formatted_body
                 }
             )
         except Exception as e:
@@ -130,48 +223,6 @@ class MatrixClient:
             html = html.replace("```", "</code></pre>", 1)
         
         return html
-    
-    async def join_rooms(self):
-        """Join all configured rooms."""
-        logger.info(f"Configured to join these rooms: {self.rooms}")
-        
-        for room_id in self.rooms:
-            if not room_id:
-                continue
-                
-            try:
-                logger.info(f"Joining room {room_id}")
-                await self.client.join(room_id)
-                await asyncio.sleep(1)  # Small delay between joins
-            except JoinError as e:
-                logger.error(f"Failed to join room {room_id}: {e}")
-    
-    async def run(self):
-        """Run the client."""
-        # Validate configuration first
-        config.validate()
-        
-        try:
-            # Connect to homeserver
-            logger.info(f"Connecting to {config.HOMESERVER_URL} as {config.USER_ID}")
-            
-            # Join rooms
-            await self.join_rooms()
-            
-            # Start sync loop
-            logger.info("Starting sync loop")
-            await self.client.sync_forever(timeout=30000)
-        
-        except KeyboardInterrupt:
-            logger.info("Received keyboard interrupt. Shutting down...")
-        except Exception as e:
-            logger.error(f"Error in Matrix client: {e}")
-            return 1
-        finally:
-            # Close the client properly
-            await self.client.close()
-        
-        return 0
 
 # Main entry point
 def main():
