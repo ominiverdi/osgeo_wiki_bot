@@ -1,4 +1,8 @@
 from typing import Dict, List, Any, Optional, Tuple
+import re
+import logging
+logger = logging.getLogger(__name__)
+
 # Add these functions to mcp_server/db/queries.py
 
 async def get_keyword_cloud() -> str:
@@ -134,3 +138,54 @@ async def execute_keyword_search(keywords: dict, limit: int = 10) -> List[Dict[s
     params.append(limit)
     
     return await execute_search_query(sql, params)
+
+async def execute_fallback_search(query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    Execute a simpler fallback search when keyword extraction doesn't yield results.
+    This directly uses the query as input for websearch_to_tsquery.
+    """
+    # Simple sanitization - keep only words and spaces, limit length
+    sanitized_query = re.sub(r'[^\w\s]', ' ', query)
+    sanitized_query = ' '.join(sanitized_query.split()[:10])  # Limit to 10 words
+    
+    if not sanitized_query:
+        return []
+    
+    sql = """
+    SELECT 
+        p.id, p.title, p.url, pc.chunk_text,
+        ts_rank(pc.tsv, websearch_to_tsquery('english', %s)) AS rank
+    FROM 
+        pages p
+    JOIN 
+        page_chunks pc ON p.id = pc.page_id
+    WHERE 
+        pc.tsv @@ websearch_to_tsquery('english', %s)
+    ORDER BY 
+        rank DESC
+    LIMIT %s
+    """
+    
+    params = [sanitized_query, sanitized_query, limit]
+    
+    return await execute_search_query(sql, params)
+
+async def execute_search_query(sql: str, params: list = None) -> List[Dict[str, Any]]:
+    """Execute a search query and return results as a list of dictionaries."""
+    from mcp_server.db.connection import get_cursor  # Import here to avoid circular imports
+    
+    try:
+        with get_cursor() as cursor:
+            if params:
+                cursor.execute(sql, params)
+            else:
+                cursor.execute(sql)
+            
+            # Return results as list of dictionaries
+            return list(cursor.fetchall())
+    except Exception as e:
+        logger.error(f"Error executing search query: {e}")
+        logger.error(f"SQL: {sql}")
+        if params:
+            logger.error(f"Params: {params}")
+        return []

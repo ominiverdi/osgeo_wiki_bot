@@ -51,7 +51,7 @@ class OllamaClient:
         result = await self.generate(
             prompt=prompt,
             model=self.model,
-            temperature=0.3  # Low temperature for more deterministic output
+            temperature=settings.KEYWORD_TEMPERATURE  # Low temperature for more deterministic output
         )
         
         return extract_keywords_from_response(result)
@@ -62,7 +62,7 @@ class OllamaClient:
         return await self.generate(
             prompt=prompt,
             model=self.model,
-            temperature=0.7  # Higher temperature for more natural responses
+            temperature=settings.RESPONSE_TEMPERATURE  # Higher temperature for more natural responses
         )
     
     async def generate_response_with_context(
@@ -73,5 +73,5 @@ class OllamaClient:
         return await self.generate(
             prompt=prompt,
             model=self.model,
-            temperature=0.7  # Higher temperature for more natural responses
+            temperature=settings.RESPONSE_TEMPERATURE  # Higher temperature for more natural responses
         )

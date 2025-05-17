@@ -23,6 +23,10 @@ class Settings:
     # Ollama settings
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
     LLM_MODEL = os.getenv("LLM_MODEL")
+
+    # LLM temperature settings
+    KEYWORD_TEMPERATURE = float(os.getenv("KEYWORD_TEMPERATURE", "0.3"))
+    RESPONSE_TEMPERATURE = float(os.getenv("RESPONSE_TEMPERATURE", "0.7"))
     
     # Server settings
     HOST = os.getenv("HOST", "0.0.0.0")
