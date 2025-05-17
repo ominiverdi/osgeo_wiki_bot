@@ -50,38 +50,43 @@ class MatrixClient:
         if event.sender == config.USER_ID:
             return
         
-        # Update handler with room member count
-        self.handler.room_member_count = room.member_count
+        # Only process messages in configured rooms
+        if room.room_id not in self.rooms:
+            logger.debug(f"Ignoring message in non-configured room: {room.room_id}")
+            return
         
         # Process message using handler
         is_mentioned, response = await self.handler.process_message(
             room.room_id,
             event.sender,
-            event.body
+            event.body,
+            event.event_id
         )
         
-        # Only respond if mentioned or in direct chat
-        if is_mentioned or room.member_count <= 2:  # 2 members = direct chat
+        # Only respond if explicitly mentioned
+        if is_mentioned and response:
             await self.send_message(room.room_id, response)
     
     async def invite_callback(self, room, event):
         """Handle room invitations."""
         logger.info(f"Received invite to room {room.room_id} from {event.sender}")
         
-        # Join the room
-        try:
-            await self.client.join(room.room_id)
-            logger.info(f"Joined room {room.room_id}")
-            
-            # Send a welcome message
-            welcome_msg = (
-                "Hello! I'm the OSGeo Wiki Bot. "
-                "I can answer questions about OSGeo's wiki content. "
-                "Just mention me (@osgeo-wiki-bot) in your message or start with !osgeo to ask a question."
-            )
-            await self.send_message(room.room_id, welcome_msg)
-        except JoinError as e:
-            logger.error(f"Failed to join room {room.room_id}: {e}")
+        # Only join rooms that are explicitly configured
+        if room.room_id in self.rooms:
+            try:
+                await self.client.join(room.room_id)
+                logger.info(f"Joined room {room.room_id}")
+                
+                # Send a welcome message
+                welcome_msg = (
+                    "Hello! I'm the OSGeo Wiki Bot. I can answer questions about OSGeo's wiki content. "
+                    "To ask a question, mention me with my full ID: @osgeo-wiki-bot:matrix.org followed by your question."
+                )
+                await self.send_message(room.room_id, welcome_msg)
+            except JoinError as e:
+                logger.error(f"Failed to join room {room.room_id}: {e}")
+        else:
+            logger.info(f"Ignoring invite to room {room.room_id} (not in configured room list)")
     
     async def send_message(self, room_id: str, message: str):
         """Send a message to a room."""
@@ -128,6 +133,8 @@ class MatrixClient:
     
     async def join_rooms(self):
         """Join all configured rooms."""
+        logger.info(f"Configured to join these rooms: {self.rooms}")
+        
         for room_id in self.rooms:
             if not room_id:
                 continue
