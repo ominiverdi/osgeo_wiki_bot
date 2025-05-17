@@ -31,10 +31,10 @@ class SearchHandler:
             logger.info(f"Retrieved {len(self.categories)} top categories")
     
     async def process_query(
-        self, 
-        query: str, 
-        context: ConversationContext
-    ) -> Tuple[str, List[Dict[str, Any]]]:
+    self, 
+    query: str, 
+    context: ConversationContext
+) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Process a query using keyword extraction and search.
         Returns (response_text, results)
@@ -68,6 +68,18 @@ class SearchHandler:
             logger.info(f"Search found {len(results)} results")
             if results and len(results) > 0:
                 logger.info(f"Top result: {results[0].get('title')} - {results[0].get('url')}")
+                
+                # Generate a response using the results
+                if is_followup:
+                    response_text = await self.response_model.generate_response_with_context(
+                        query, results, query_context
+                    )
+                else:
+                    response_text = await self.response_model.generate_response(
+                        query, results
+                    )
+            else:
+                response_text = f"I couldn't find any information about '{query}' in the OSGeo wiki. Please try rephrasing your question."
         
         except Exception as e:
             logger.error(f"Error processing query: {e}")

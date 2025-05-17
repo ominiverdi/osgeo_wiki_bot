@@ -80,7 +80,7 @@ async def get_top_categories() -> list:
         return []
 
 async def execute_keyword_search(keywords: dict, limit: int = 10) -> List[Dict[str, Any]]:
-    """Execute a search using the extracted keywords."""
+    """Execute a search using the extracted keywords with fallback strategy."""
     
     # Combine primary and secondary keywords
     primary_keywords = keywords.get("primary_keywords", [])
@@ -101,15 +101,13 @@ async def execute_keyword_search(keywords: dict, limit: int = 10) -> List[Dict[s
     
     print(f"==== SQL SEARCH ====")
     print(f"SEARCH QUERY: {search_query}")
-    print(f"CATEGORIES: {keywords.get('categories', [])}")
     
-    # Build SQL query with category boosting if applicable
-    categories = keywords.get("categories", [])
-    
-    sql = """
+    # Better ranking that considers title matches more important
+    base_sql = """
     SELECT 
         p.id, p.title, p.url, pc.chunk_text,
-        ts_rank(pc.tsv, websearch_to_tsquery('english', %s)) AS rank
+        ts_rank(pc.tsv, websearch_to_tsquery('english', %s)) + 
+        CASE WHEN p.title ILIKE '%%' || %s || '%%' THEN 2.5 ELSE 0 END AS rank
     FROM 
         pages p
     JOIN 
@@ -118,39 +116,39 @@ async def execute_keyword_search(keywords: dict, limit: int = 10) -> List[Dict[s
         pc.tsv @@ websearch_to_tsquery('english', %s)
     """
     
-    params = [search_query, search_query]
+    # Try search with category filtering if categories exist
+    categories = keywords.get("categories", [])
     
-    # Add category filtering if categories are present
     if categories:
-        placeholders = ", ".join(["%s"] * len(categories))
-        sql += f"""
-        AND EXISTS (
-            SELECT 1 
-            FROM page_categories cat 
-            WHERE cat.page_id = p.id 
-            AND cat.category_name IN ({placeholders})
-        )
-        """
-        params.extend(categories)
+        print(f"CATEGORIES: {categories}")
+        category_where = "AND EXISTS (SELECT 1 FROM page_categories cat WHERE cat.page_id = p.id AND cat.category_name IN ({}))"
+        category_where = category_where.format(", ".join(["%s"] * len(categories)))
+        
+        category_sql = base_sql + category_where + " ORDER BY rank DESC LIMIT %s"
+        
+        # The main keyword appears twice - once for ts_rank and once for title ILIKE
+        category_params = [search_query, search_query.split(" | ")[0], search_query] + categories + [limit]
+        
+        category_results = await execute_search_query(category_sql, category_params)
+        
+        if category_results and len(category_results) > 0:
+            print(f"CATEGORY FILTERED RESULTS: {len(category_results)}")
+            return category_results
+        else:
+            print("No results with category filtering, falling back to full search")
     
-    # Complete the query with order by and limit
-    sql += """
-    ORDER BY 
-        rank DESC
-    LIMIT %s
-    """
-    params.append(limit)
+    # Fallback to search without category filtering
+    fallback_sql = base_sql + " ORDER BY rank DESC LIMIT %s"
+    # The main keyword appears twice - once for ts_rank and once for title ILIKE
+    fallback_params = [search_query, search_query.split(" | ")[0], search_query, limit]
     
-    # Execute the query and *then* print info about results
-    results = await execute_search_query(sql, params)
+    results = await execute_search_query(fallback_sql, fallback_params)
     
-    print(f"RESULTS COUNT: {len(results)}")
+    print(f"FALLBACK RESULTS COUNT: {len(results)}")
     if results and len(results) > 0:
-        print(f"TOP RESULT: {results[0].get('title')} - {results[0].get('url')}")
+        print(f"TOP FALLBACK RESULT: {results[0].get('title')} - {results[0].get('url')}")
     
     return results
-
-
 
 async def execute_fallback_search(query: str, limit: int = 10) -> List[Dict[str, Any]]:
     """
@@ -188,6 +186,13 @@ async def execute_search_query(sql: str, params: list = None) -> List[Dict[str, 
     from mcp_server.db.connection import get_cursor  # Import here to avoid circular imports
     
     try:
+        if params:
+            # Simple string substitution for logging only - not for actual execution
+            log_sql = sql
+            for param in params:
+                log_sql = log_sql.replace("%s", f"'{param}'", 1)
+            logger.info(f"EXECUTING SQL: {log_sql}")
+
         with get_cursor() as cursor:
             if params:
                 cursor.execute(sql, params)
