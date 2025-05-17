@@ -127,6 +127,8 @@ class MatrixClient:
         # Extract the actual query from the message
         message_body = event.body
         query = message_body
+        is_mentioned = False  # Initialize to False by default
+
         
         # If the message starts with the bot's display name followed by colon
         if message_body.lower().startswith("osgeo_wiki_bot:"):
@@ -178,11 +180,11 @@ class MatrixClient:
             formatted_body = self._format_markdown(message)
             
             # Make URLs clickable by wrapping them in anchor tags if not already
-            url_pattern = r'(https?://[^\s<]+)'
-            formatted_body = re.sub(url_pattern, 
-                                 lambda m: f'<a href="{m.group(0)}">{m.group(0)}</a>' 
-                                 if '<a href="' not in m.group(0) else m.group(0), 
-                                 formatted_body)
+            # url_pattern = r'(https?://[^\s<]+)'
+            # formatted_body = re.sub(url_pattern, 
+            #                      lambda m: f'<a href="{m.group(0)}">{m.group(0)}</a>' 
+            #                      if '<a href="' not in m.group(0) else m.group(0), 
+            #                      formatted_body)
             
             await self.client.room_send(
                 room_id=room_id,
