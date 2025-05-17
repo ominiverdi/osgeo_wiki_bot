@@ -38,24 +38,28 @@ Categories should match the wiki categories that might contain relevant content.
 JSON:
 """
 
-def extract_keywords_from_response(text: str) -> dict:
+def extract_keywords_from_response(text: str, original_query: str = "") -> dict:
     """Extract JSON from the LLM response."""
+    extraction_logger.debug(f"Original query: {original_query}")
+    extraction_logger.debug(f"LLM response: {text}")
+    
     try:
         # Find JSON object in the response
         json_match = re.search(r'(\{.*\})', text, re.DOTALL)
         if json_match:
             keywords_json = json.loads(json_match.group(1))
+            extraction_logger.debug(f"Extracted keywords: {json.dumps(keywords_json, indent=2)}")
             return keywords_json
         else:
             # Fallback if no JSON is found
-            logger.warning(f"No JSON found in keyword extraction response")
+            extraction_logger.warning(f"No JSON found in keyword extraction response")
             return {
                 "primary_keywords": [],
                 "secondary_keywords": [],
                 "categories": []
             }
     except Exception as e:
-        logger.error(f"Error parsing keyword extraction result: {e}")
+        extraction_logger.error(f"Error parsing keyword extraction result: {e}")
         # Simple fallback
         return {
             "primary_keywords": [],

@@ -99,6 +99,10 @@ async def execute_keyword_search(keywords: dict, limit: int = 10) -> List[Dict[s
     else:
         search_query = " | ".join(secondary_keywords)
     
+    print(f"==== SQL SEARCH ====")
+    print(f"SEARCH QUERY: {search_query}")
+    print(f"CATEGORIES: {keywords.get('categories', [])}")
+    
     # Build SQL query with category boosting if applicable
     categories = keywords.get("categories", [])
     
@@ -137,7 +141,16 @@ async def execute_keyword_search(keywords: dict, limit: int = 10) -> List[Dict[s
     """
     params.append(limit)
     
-    return await execute_search_query(sql, params)
+    # Execute the query and *then* print info about results
+    results = await execute_search_query(sql, params)
+    
+    print(f"RESULTS COUNT: {len(results)}")
+    if results and len(results) > 0:
+        print(f"TOP RESULT: {results[0].get('title')} - {results[0].get('url')}")
+    
+    return results
+
+
 
 async def execute_fallback_search(query: str, limit: int = 10) -> List[Dict[str, Any]]:
     """

@@ -47,12 +47,20 @@ class OllamaClient:
     
     async def extract_keywords(self, query: str, keyword_cloud: str, categories: list) -> dict:
         """Extract keywords from a natural language query."""
+        print(f"==== LLM REQUEST ====")
+        print(f"QUERY: {query}")
+        
         prompt = create_keyword_extraction_prompt(query, keyword_cloud, categories)
+        print(f"PROMPT (truncated): {prompt[:200]}...")
+        
         result = await self.generate(
             prompt=prompt,
             model=self.model,
-            temperature=settings.KEYWORD_TEMPERATURE  # Low temperature for more deterministic output
+            temperature=settings.KEYWORD_TEMPERATURE
         )
+        
+        print(f"==== LLM RESPONSE ====")
+        print(f"RESPONSE: {result[:200]}...")
         
         return extract_keywords_from_response(result)
         

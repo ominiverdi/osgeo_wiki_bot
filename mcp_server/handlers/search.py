@@ -1,6 +1,7 @@
-# Replace mcp_server/handlers/search.py with this implementation
+# mcp_server/handlers/search.py
 from typing import Dict, List, Any, Optional, Tuple
 import logging
+import re
 
 from mcp_server.config import settings
 from mcp_server.db.queries import execute_keyword_search, execute_fallback_search, get_keyword_cloud, get_top_categories
@@ -50,37 +51,23 @@ class SearchHandler:
         results = []
         
         try:
-            # 1. Extract keywords from query
+            # Normal flow: Extract keywords from query
+            logger.info(f"Extracting keywords for query: {query}")
             keywords = await self.llm_client.extract_keywords(
                 query,
                 self.keyword_cloud,
                 self.categories
             )
             
-            logger.info(f"Extracted keywords: {keywords}")
+            logger.info(f"LLM extracted keywords: {keywords}")
             
-            # 2. Execute search with keywords
+            # Execute search with keywords
             results = await execute_keyword_search(keywords)
             
-            # 3. If no results, try with simpler approach (just use the query directly)
-            if not results:
-                logger.info("No results with keyword search, trying fallback")
-                results = await execute_fallback_search(query)
-            
-            # Update context with results before generating response
-            update_context_with_results(context, query, results)
-            
-            # Format response based on results
-            if results:
-                # Generate response using LLM
-                if is_followup:
-                    response_text = await self.response_model.generate_response_with_context(
-                        query, results, query_context
-                    )
-                else:
-                    response_text = await self.response_model.generate_response(query, results)
-            else:
-                response_text = format_search_results(query, [])
+            # Log search results
+            logger.info(f"Search found {len(results)} results")
+            if results and len(results) > 0:
+                logger.info(f"Top result: {results[0].get('title')} - {results[0].get('url')}")
         
         except Exception as e:
             logger.error(f"Error processing query: {e}")

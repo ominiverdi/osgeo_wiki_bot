@@ -50,9 +50,9 @@ class MessageHandler:
         self.last_response_time[room_id] = current_time
         
         # Process the query through MCP server
-        logger.debug(f"Sending to MCP server: '{message}'")
+        # logger.debug(f"Sending to MCP server: '{message}'")
         response = await self._send_to_mcp(room_id, message)
-        logger.debug(f"MCP response received: {response is not None}")
+        # logger.debug(f"MCP response received: {response is not None}")
         
         # If we got a response, return it
         if response:
@@ -78,18 +78,18 @@ class MessageHandler:
             "context": context.get("context") if context else None
         }
         
-        logger.debug(f"MCP request data: {request_data}")
+        # logger.debug(f"MCP request data: {request_data}")
         
         try:
             async with httpx.AsyncClient() as client:
-                logger.debug(f"Sending request to MCP server: {self.mcp_server_url}")
+                # logger.debug(f"Sending request to MCP server: {self.mcp_server_url}")
                 response = await client.post(
                     self.mcp_server_url,
                     json=request_data,
                     timeout=60.0  # Long timeout for complex queries
                 )
                 
-                logger.debug(f"MCP server status code: {response.status_code}")
+                # logger.debug(f"MCP server status code: {response.status_code}")
                 
                 if response.status_code != 200:
                     logger.error(f"Error from MCP server: {response.status_code}")
@@ -97,7 +97,7 @@ class MessageHandler:
                     return None
                 
                 response_data = response.json()
-                logger.debug(f"MCP server response data: {response_data}")
+                # logger.debug(f"MCP server response data: {response_data}")
                 
                 # Update internal conversation state
                 if "context" in response_data:

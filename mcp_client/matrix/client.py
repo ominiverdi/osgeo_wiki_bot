@@ -23,12 +23,24 @@ except ImportError:
 from .config import config
 from .handlers import MessageHandler
 
+
+# Silence noisy loggers
+logging.getLogger('httpcore').setLevel(logging.WARNING)
+logging.getLogger('httpx').setLevel(logging.WARNING) 
+logging.getLogger('nio').setLevel(logging.WARNING)
 # Configure logging
+# logging.basicConfig(
+#     level=logging.DEBUG if config.DEBUG else logging.INFO,
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# )
 logging.basicConfig(
-    level=logging.DEBUG if config.DEBUG else logging.INFO,
+    level=logging.INFO,  # Change from DEBUG to INFO
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+
 
 class MatrixClient:
     """Matrix client for the OSGeo Wiki Bot."""
