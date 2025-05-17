@@ -14,6 +14,8 @@ class MessageHandler:
     
     def __init__(self, mcp_server_url: str):
         self.mcp_server_url = mcp_server_url
+        self.room_member_count = None  # Will be set by the client
+
         # Keep conversation contexts separated by room
         self.conversations = {}
     
@@ -48,12 +50,13 @@ class MessageHandler:
         return True, "I'm sorry, I'm having trouble accessing the OSGeo wiki information right now. Please try again later."
     
     def _parse_message(self, message: str) -> Tuple[bool, str]:
-        """
-        Parse the message to determine if the bot was mentioned and extract the query.
+        """Parse the message to determine if the bot was mentioned and extract the query."""
+        # In a small room, treat all messages as directed to the bot unless they mention someone else
+        if self.room_member_count and self.room_member_count <= 3:
+            # Check if this is a message mentioning someone else
+            if not re.search(r'@\w+:', message) and not message.startswith('!'):
+                return True, message
         
-        Returns:
-            Tuple[bool, str]: (is_mentioned, query)
-        """
         # Check for different ways the bot might be addressed
         mention_patterns = [
             r'@osgeo-wiki-bot:?\s*(.*)',      # Direct mention: @osgeo-wiki-bot

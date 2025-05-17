@@ -5,6 +5,7 @@ import asyncio
 import json
 import httpx
 from typing import Dict, List, Any, Optional
+import re
 
 # Try different import approaches
 try:
@@ -42,11 +43,15 @@ class MatrixClient:
         self.client.add_event_callback(self.message_callback, RoomMessageText)
         self.client.add_event_callback(self.invite_callback, InviteEvent)
     
+    # In message_callback method in client.py
     async def message_callback(self, room, event):
         """Process incoming room messages."""
         # Skip own messages
         if event.sender == config.USER_ID:
             return
+        
+        # Update handler with room member count
+        self.handler.room_member_count = room.member_count
         
         # Process message using handler
         is_mentioned, response = await self.handler.process_message(
@@ -56,7 +61,7 @@ class MatrixClient:
         )
         
         # Only respond if mentioned or in direct chat
-        if is_mentioned or room.member_count == 2:
+        if is_mentioned or room.member_count <= 2:  # 2 members = direct chat
             await self.send_message(room.room_id, response)
     
     async def invite_callback(self, room, event):

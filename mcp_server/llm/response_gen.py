@@ -18,7 +18,8 @@ SQL Results:
 
 Generate a CONCISE, informative answer based on these results. Be brief but accurate.
 - Use 3-5 short sentences maximum
-- Avoid unnecessary explanations
+- Focus ONLY on answering the exact query
+- If asked about "what is OSGeo", prioritize general information about the organization itself
 - Include the EXACT URL to the specific wiki page at the end (no markdown formatting)
 - Do not wrap or alter the URL in any way
 - Focus only on the most relevant information
