@@ -30,8 +30,8 @@ TEST_QUERIES = [
     "Can you explain what GDAL is used for?",
     "What are the local chapters of OSGeo?",
     "When was OSGeo founded?",
-    "When was the first FOSS4G event?",  # Added to test "first" temporal queries
-    "When is the next FOSS4G conference scheduled?"  # Added to test "next" temporal queries
+    "When was the first FOSS4G event?",
+    "When is the next FOSS4G conference scheduled?"
 ]
 
 # Sample data based on OSGeo wiki content
@@ -49,70 +49,65 @@ CATEGORIES = [
 ]
 
 def create_query_understanding_prompt(query):
-    """Create a prompt for LLM to analyze query type and generate tiered keywords."""
+    """Create a prompt for LLM to generate alternative search queries."""
     categories_str = "\n".join([f"- {cat}" for cat in CATEGORIES])
     
     return f"""
-You are a search assistant for the OSGeo wiki. Analyze the query type and generate tiered search keywords.
+You are a search assistant for the OSGeo wiki. Generate alternative search queries that will help find relevant information.
 
 OSGeo KEYWORD CLOUD:
 {KEYWORD_CLOUD}
 
-MAIN WIKI CATEGORIES (use EXACTLY these names, with exact spelling and capitalization):
+MAIN WIKI CATEGORIES (for your reference):
 {categories_str}
 
 CURRENT DATE: {CURRENT_DATE}
 
 USER QUERY: {query}
 
-Analyze the query and respond with a JSON object containing:
-1. A "query_type" field identifying the type of query (definitional, temporal, biographical, procedural, locational)
-2. A "keyword_tiers" array containing tiers of search keywords from most specific to most general
-3. A "categories" array of relevant wiki categories to filter by (use EXACTLY the names from the list above)
+Analyze the query and respond with a JSON object containing ONLY:
+- A "query_alternatives" array containing 3-5 alternative search queries, ordered from most specific to most general
 
-Pay close attention to these query types:
+Guidelines for generating alternatives:
+- Make alternatives specific and varied to maximize search coverage
+- Include temporality ("current", "latest", "{CURRENT_DATE[:4]}", etc.) when time-relevant
+- Use quotes for exact phrases that should appear together
+- Focus on terms that would likely appear in wiki pages
+- Consider OSGeo's structure, events, and terminology
+- For questions about recent or current information, include the current year ({CURRENT_DATE[:4]})
+- For "who is" questions, focus on role titles, names, and positions
 
-- Definitional queries: ("What is X?", "What does X do?")
-  Focus on defining phrases, then key terms
-  CORRECT: "What is OSGeo?" → [["\\\"OSGeo is\\\"", "\\\"about OSGeo\\\""], ["OSGeo", "foundation"]]
-  INCORRECT: "What is OSGeo?" → [["\\\"What is OSGeo\\\""], ["OSGeo"]]
+Examples:
 
-- Temporal queries: ("When did X happen?", "When will X occur?")
-  Use specific years derived from current date
-  For "last" events: Include current and previous years (e.g., 2025, 2024, 2023)
-  For "first" events: Use terms like "first", "founding", "inaugural"
-  For "next" or "upcoming" events: Include current AND future years (e.g., 2025, 2026, 2027)
-  CORRECT: "When is the next FOSS4G?" → [["FOSS4G 2025", "FOSS4G 2026"]]
-  INCORRECT: "When is the next FOSS4G?" → [["\\\"When is the next FOSS4G\\\""]]
+Query: "What is OSGeo?"
+CORRECT: {{
+  "query_alternatives": [
+    "OSGeo foundation description",
+    "about OSGeo mission",
+    "OSGeo organization overview",
+    "what is OSGeo foundation"
+  ]
+}}
 
-- Locational queries: ("Where is X?", "Where was X held?")
-  Focus on location terms, venues, places
-  CORRECT: "Where was FOSS4G 2022 held?" → [["FOSS4G 2022 location", "FOSS4G 2022 venue"]]
-  INCORRECT: "Where was FOSS4G 2022 held?" → [["\\\"Where was FOSS4G 2022 held\\\""]]
-  This is a LOCATIONAL query, not temporal, even if it contains a year
+Query: "Who is the president of OSGeo?"
+CORRECT: {{
+  "query_alternatives": [
+    "current OSGeo president name",
+    "OSGeo president {CURRENT_DATE[:4]}",
+    "who leads OSGeo foundation",
+    "OSGeo board president"
+  ]
+}}
 
-- Biographical queries: ("Who is X?", "Who leads X?")
-  Focus on person names and roles
-  CORRECT: "Who is president?" → [["president OSGeo", "OSGeo leadership"]]
-  INCORRECT: "Who is president?" → [["\\\"Who is president\\\""]]
-
-- Procedural queries: ("How do I X?", "How does X work?")
-  Include action verbs and process terms
-  CORRECT: "How to join OSGeo?" → [["\\\"join OSGeo\\\"", "membership process"]]
-  INCORRECT: "How to join OSGeo?" → [["\\\"How to join OSGeo\\\""]]
-
-QUOTATION RULES:
-1. NEVER quote the exact user query (e.g., "What is OSGeo?")
-2. Only quote phrases likely to appear in the content (e.g., "OSGeo is a foundation")
-3. For definitional queries, quote phrases like "X is", "about X", "X was founded"
-4. For procedural queries, quote action phrases like "join X", "become a member"
-5. Single words should NOT be quoted
-
-IMPORTANT RULES:
-1. For categories, use ONLY the exact names provided in the list above
-2. "Where" questions are almost always LOCATIONAL, not temporal
-3. "Next" or "upcoming" event queries should include future years (2025, 2026, 2027)
-4. Carefully analyze whether a query is about a time (temporal) or a place (locational)
+Query: "When was FOSS4G 2022 held?"
+CORRECT: {{
+  "query_alternatives": [
+    "FOSS4G 2022 location date",
+    "FOSS4G 2022 event details",
+    "where when FOSS4G 2022",
+    "FOSS4G 2022 conference"
+  ]
+}}
 
 JSON:
 """
@@ -139,7 +134,11 @@ async def generate_from_ollama(prompt):
 def extract_json(text):
     """Extract JSON object from text response."""
     # Try to find JSON using regex
-    json_match = re.search(r'(\{[^{]*"query_type".*\})', text, re.DOTALL)
+    json_match = re.search(r'(\{[^{]*"query_alternatives".*\})', text, re.DOTALL)
+    if not json_match:
+        # Fall back to any JSON-like structure in case the format varies
+        json_match = re.search(r'(\{.*\})', text, re.DOTALL)
+    
     if json_match:
         try:
             return json.loads(json_match.group(1))
@@ -171,15 +170,9 @@ async def main():
     with open("query_understanding_results.json", "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
     
-    # Create a more readable output file with just queries and results
-    with open("query_results.txt", "w", encoding="utf-8") as f:
-        for item in results:
-            f.write(f"QUERY: {item['query']}\n\n")
-            f.write(json.dumps(item['result'], indent=2))
-            f.write("\n\n" + "="*80 + "\n\n")
     
     print("\nTesting complete!")
-    print("Results saved to query_understanding_results.json and query_results.txt")
+    print("Results saved to query_understanding_results.json")
 
 if __name__ == "__main__":
     asyncio.run(main())
