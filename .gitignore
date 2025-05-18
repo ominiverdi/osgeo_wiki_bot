@@ -173,3 +173,8 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 wiki_dump/
+processed_query_results.json
+query_understanding_results.json
+search_results.json
+simple_search_results.json
+unified_search_results.json
