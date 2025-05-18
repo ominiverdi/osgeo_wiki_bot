@@ -207,3 +207,59 @@ async def execute_search_query(sql: str, params: list = None) -> List[Dict[str, 
         if params:
             logger.error(f"Params: {params}")
         return []
+
+async def execute_alternative_search(query_alternatives: List[str], limit: int = 10, rank_threshold: float = 0.1):
+    """Execute search query with the exact query structure from test script."""
+    alternatives_list = []
+    
+    # Format alternatives for SQL exactly as in test script
+    for alt in query_alternatives:
+        # Replace single quotes with double single quotes for SQL safety
+        safe_alt = alt.replace("'", "''")
+        alternatives_list.append(f"'{safe_alt}'")
+    
+    alternatives_sql = ", ".join(alternatives_list)
+    
+    sql = f"""
+    WITH query_alternatives AS (
+        SELECT unnest(ARRAY[{alternatives_sql}]) AS query_text
+    ),
+    ranked_chunks AS (
+        SELECT 
+            p.id AS page_id,
+            p.title,
+            p.url,
+            pc.chunk_text,
+            ts_rank(pc.tsv, websearch_to_tsquery('english', alt.query_text)) AS chunk_rank,
+            alt.query_text
+        FROM 
+            page_chunks pc
+        JOIN 
+            pages p ON pc.page_id = p.id
+        CROSS JOIN query_alternatives alt
+        WHERE 
+            pc.tsv @@ websearch_to_tsquery('english', alt.query_text)
+    )
+    SELECT 
+        r.title,
+        r.url,
+        r.page_id as id,
+        r.chunk_text,
+        ts_headline('english', r.chunk_text, 
+            websearch_to_tsquery('english', r.query_text),
+            'MaxFragments=1, MaxWords=20, MinWords=3, StartSel=<<, StopSel=>>, HighlightAll=true'
+        ) AS highlighted_text,
+        r.chunk_rank AS rank
+    FROM (
+        SELECT DISTINCT ON (title, url) 
+            title, url, page_id, chunk_text, query_text, chunk_rank
+        FROM ranked_chunks
+        WHERE chunk_rank >= {rank_threshold}
+        ORDER BY title, url, chunk_rank DESC
+    ) r
+    ORDER BY 
+        rank DESC
+    LIMIT {limit};
+    """
+    
+    return await execute_search_query(sql)

@@ -8,6 +8,10 @@ from mcp_server.db.queries import execute_keyword_search, execute_fallback_searc
 from mcp_server.llm.ollama import OllamaClient
 from mcp_server.utils.response import format_search_results
 from .context import ConversationContext, update_context_with_results
+from mcp_server.llm.query_alternatives import extract_query_alternatives
+from mcp_server.db.queries import execute_alternative_search
+from mcp_server.llm.response_gen import create_response_generation_prompt
+
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +39,7 @@ class SearchHandler:
     query: str, 
     context: ConversationContext
 ) -> Tuple[str, List[Dict[str, Any]]]:
-        """
-        Process a query using keyword extraction and search.
-        Returns (response_text, results)
-        """
+        """Process a query using query alternatives approach."""
         # Initialize if needed
         await self.initialize()
         
@@ -51,18 +52,20 @@ class SearchHandler:
         results = []
         
         try:
-            # Normal flow: Extract keywords from query
-            logger.info(f"Extracting keywords for query: {query}")
-            keywords = await self.llm_client.extract_keywords(
+            # Generate alternative search queries
+            # IMPORTANT FIX: Use self.keyword_cloud and self.categories
+            logger.info(f"Generating query alternatives for: {query}")
+            alternatives = await extract_query_alternatives(
+                self.llm_client,
                 query,
-                self.keyword_cloud,
-                self.categories
+                self.keyword_cloud,  # Use instance variable
+                self.categories      # Use instance variable
             )
             
-            logger.info(f"LLM extracted keywords: {keywords}")
+            logger.info(f"Generated alternatives: {alternatives}")
             
-            # Execute search with keywords
-            results = await execute_keyword_search(keywords)
+            # Execute search with alternatives
+            results = await execute_alternative_search(alternatives)
             
             # Log search results
             logger.info(f"Search found {len(results)} results")
@@ -75,14 +78,18 @@ class SearchHandler:
                         query, results, query_context
                     )
                 else:
-                    response_text = await self.response_model.generate_response(
-                        query, results
+                    # Use the correct function to generate a response
+                    response_text = await self.response_model.generate(
+                        prompt=create_response_generation_prompt(query, results),
+                        temperature=settings.RESPONSE_TEMPERATURE
                     )
             else:
                 response_text = f"I couldn't find any information about '{query}' in the OSGeo wiki. Please try rephrasing your question."
         
         except Exception as e:
             logger.error(f"Error processing query: {e}")
+            import traceback
+            logger.error(traceback.format_exc())  # Add traceback for more details
             response_text = f"I encountered an error while searching for information about '{query}'. Please try rephrasing your question."
             results = []
         

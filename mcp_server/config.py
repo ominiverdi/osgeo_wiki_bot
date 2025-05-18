@@ -32,6 +32,12 @@ class Settings:
     HOST = os.getenv("HOST", "0.0.0.0")
     PORT = int(os.getenv("PORT", "8000"))
     DEBUG = os.getenv("DEBUG", "False").lower() == "true"
+
+
+
+    # Query alternative settings
+    QUERY_ALTERNATIVES_MIN = int(os.getenv("QUERY_ALTERNATIVES_MIN", "3"))
+    QUERY_ALTERNATIVES_MAX = int(os.getenv("QUERY_ALTERNATIVES_MAX", "5"))
     
     # MCP settings
     CONTEXT_HISTORY_SIZE = int(os.getenv("CONTEXT_HISTORY_SIZE", "10"))
