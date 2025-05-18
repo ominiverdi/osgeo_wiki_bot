@@ -9,7 +9,7 @@ import requests
 from datetime import datetime
 
 
-CURRENT_DATE = datetime.now().strftime("%A, %B %d, %Y")  # e.g., "Sunday, May 18, 2025"
+CURRENT_DATE = datetime.now().strftime("%A, %B %d, %Y")  # "Sunday, May 18, 2025"
 
 # Load environment variables
 load_dotenv()
@@ -126,6 +126,13 @@ Guidelines for your answer:
 6. Format your answer in a concise, readable manner.
 7. Include relevant URLs from the search results as references.
 8. For list-type questions, organize information clearly if multiple items are found.
+
+SPECIAL TIME-BASED INSTRUCTIONS:
+9. "Next" means events occurring AFTER {CURRENT_DATE}.
+10. "Last" or "latest" means the most recent events BEFORE {CURRENT_DATE}.
+11. "Current" refers to the status as of {CURRENT_DATE}.
+12. For historical questions (founding dates, etc.), prioritize sources that explicitly mention "founded", "established", or "started", NOT references to MOUs or partnerships.
+13. For organizational roles (president, etc.), evaluate whether information is current as of {CURRENT_DATE} - check if there are date indicators in the search results.
 
 Your response should be factual, helpful, and directly address the question without adding speculation beyond what's in the search results.
 """
