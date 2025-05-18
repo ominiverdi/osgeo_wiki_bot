@@ -17,7 +17,8 @@ class MatrixConfig:
     HOMESERVER_URL = os.getenv("MATRIX_HOMESERVER_URL", "https://matrix.org")
     ACCESS_TOKEN = os.getenv("MATRIX_ACCESS_TOKEN")
     USER_ID = os.getenv("MATRIX_USER_ID")
-    
+    PASSWORD = os.getenv("MATRIX_PASSWORD")
+
     # Get room IDs as a list
     @property
     def ROOM_IDS(self):
@@ -35,6 +36,16 @@ class MatrixConfig:
     def validate(cls):
         """Validate configuration."""
         missing = []
+
+         # Check if either token or password is available
+        has_token = bool(cls.ACCESS_TOKEN)
+        has_password = bool(cls.PASSWORD)
+        
+        if not (has_token or has_password):
+            missing.append("MATRIX_ACCESS_TOKEN or MATRIX_PASSWORD")
+        
+        if not cls.USER_ID:
+            missing.append("MATRIX_USER_ID")
         
         if not cls.ACCESS_TOKEN:
             missing.append("MATRIX_ACCESS_TOKEN")

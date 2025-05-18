@@ -66,12 +66,36 @@ class MatrixClient:
             # Connect to homeserver
             logger.info(f"Connecting to {config.HOMESERVER_URL} as {config.USER_ID}")
             
+            # First check if we need to authenticate
+            if not self.client.access_token and config.PASSWORD:
+                success = await self.login()
+                if not success:
+                    logger.error("Failed to authenticate, cannot continue")
+                    return 1
+            
             # Join rooms
             await self.join_rooms()
             
-            # Start sync loop
+            # Start sync loop with error handling
             logger.info("Starting sync loop")
-            await self.client.sync_forever(timeout=30000)
+            
+            while True:
+                try:
+                    await self.client.sync(timeout=30000)
+                except Exception as e:
+                    error_str = str(e).lower()
+                    if "unauthorized" in error_str or "forbidden" in error_str or "token" in error_str:
+                        logger.warning("Token may have expired, attempting to re-authenticate")
+                        success = await self.login()
+                        if not success:
+                            logger.error("Failed to re-authenticate")
+                            break
+                        # Continue with sync loop after successful re-auth
+                        continue
+                    else:
+                        # For other errors, log and continue
+                        logger.error(f"Sync error: {e}")
+                        await asyncio.sleep(5)  # Wait before retry
         
         except KeyboardInterrupt:
             logger.info("Received keyboard interrupt. Shutting down...")
@@ -105,6 +129,33 @@ class MatrixClient:
         else:
             logger.info(f"Ignoring invite to room {room.room_id} (not in configured room list)")
     
+    async def login(self):
+        """Authenticate and get a new access token."""
+        try:
+            # Create a new client for login
+            login_client = AsyncClient(config.HOMESERVER_URL, config.USER_ID)
+            
+            # Attempt login
+            if config.PASSWORD:
+                logger.info(f"Authenticating as {config.USER_ID}...")
+                resp = await login_client.login(config.PASSWORD, device_name="OSGeoWikiBot")
+                
+                if isinstance(resp, LoginResponse):
+                    # Update our client with new token
+                    new_token = resp.access_token
+                    self.client.access_token = new_token
+                    logger.info("Successfully obtained new access token")
+                    return True
+                else:
+                    logger.error(f"Failed to log in: {resp}")
+                    return False
+            else:
+                logger.error("No password available for authentication")
+                return False
+        except Exception as e:
+            logger.error(f"Authentication error: {e}")
+            return False
+            
     async def join_rooms(self):
         """Join all configured rooms."""
         logger.info(f"Configured to join these rooms: {self.rooms}")
