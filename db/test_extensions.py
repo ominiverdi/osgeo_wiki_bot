@@ -13,7 +13,10 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
 # Configuration
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_API_URL = f"{OLLAMA_BASE_URL}/api/generate"
-LLM_MODEL = os.getenv("LLM_MODEL", "gemma3:latest")
+# LLM_MODEL = os.getenv("LLM_MODEL", "gemma3:latest")
+LLM_MODEL = os.getenv("LLM_MODEL", "wiki-extractor")
+
+
 MIN_CONTENT_LENGTH = 500  # Minimum characters required to generate a resume
 MAX_CONTENT_LENGTH = 30000  # Maximum characters to send to the LLM
 
@@ -97,6 +100,7 @@ RULES:
 - Do not invent or add any terms not in the original text
 - Use commas to separate terms (no line breaks)
 - Between 20-50 words total
+- Do not repeat identical keywords. Each term or phrase should appear only once in your output.
 - Do not include explanatory text or descriptions in your response"
 
 CONTENT:
