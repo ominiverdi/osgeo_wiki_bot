@@ -12,7 +12,7 @@ This bot crawls the OSGeo wiki, processes content into searchable chunks, and en
 
 - **Crawler**: Extracts content from wiki.osgeo.org
 - **Database**: PostgreSQL with full-text search capabilities
-- **MCP Server**: Matrix Chat Protocol server that processes queries
+- **MCP Server**: Model Context Protocol server that processes queries
 - **LLM Integration**: Uses Ollama for SQL generation and response formatting
 
 ### Data Flow
