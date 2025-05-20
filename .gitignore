@@ -181,3 +181,4 @@ unified_search_results.json
 tests/queries.sql
 query_results.txt
 search_and_answer_results.json
+db/extension_checkpoint.json
