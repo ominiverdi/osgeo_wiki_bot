@@ -70,3 +70,17 @@ CREATE TABLE message_contexts (
 CREATE INDEX idx_conversations_room ON conversations(matrix_room_id);
 CREATE INDEX idx_conversation_messages_convo ON conversation_messages(conversation_id);
 CREATE INDEX idx_message_contexts_message ON message_contexts(message_id);
+
+
+-- A table to search with contextual LLM generated resume and keywords
+CREATE TABLE page_extensions (
+    id SERIAL PRIMARY KEY,
+    wiki_url TEXT NOT NULL,          -- Direct link to wiki page
+    page_title TEXT NOT NULL,        -- Page title for reference
+    resume TEXT NOT NULL,            -- LLM-generated semantic summary
+    keywords TEXT NOT NULL,          -- LLM-generated searchable terms for improved matching
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_page_extensions_resume ON page_extensions USING GIN(to_tsvector('english', resume));
+CREATE INDEX idx_page_extensions_keywords ON page_extensions USING GIN(to_tsvector('english', keywords));

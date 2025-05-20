@@ -104,7 +104,7 @@ URL FORMATTING GUIDELINES:
 - Do NOT put any brackets, parentheses or other punctuation immediately before or after the URL
 - Format as: "Source: https://wiki.osgeo.org/example" (not "[https://...]" or "(https://...)")
 - If citing multiple sources, put each URL on its own line
-- Make sure to leave a space between any text and the URLsend_message
+- Make sure to leave a space between any text and the URL
 
 SPECIAL TIME-BASED INSTRUCTIONS:
 9. "Next" means events occurring AFTER {current_date}.
