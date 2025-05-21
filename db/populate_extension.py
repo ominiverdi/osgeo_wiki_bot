@@ -63,13 +63,22 @@ async def generate_resume(title, content):
     """Generate a resume using the LLM."""
     prompt = f"""You are generating a database-optimized factual summary of "{title}" ({MIN_CONTENT_LENGTH} characters).
 
-OUTPUT FORMAT: Bullet list of key facts only.
-* Start each point with an asterisk
-* Include all names, dates, URLs, and precise details
-* No introductions, conclusions, or questions
-* No headings or sections
-* Use plain text only (no bold/formatting)
+EXTRACT:
+1. Core information about {title} (purpose, definition, function)
+2. Relationships between entities (X is part of Y, X created Y)
+3. Dates, names, URLs, and precise details exactly as stated
+4. Organizational structures or hierarchies
+5. Technical capabilities or specifications
 
+FORMAT REQUIREMENTS:
+* Return ONLY a bulleted list of facts
+* Start each fact with an asterisk (*)
+* Include one key point per bullet
+* Do NOT add introductions, conclusions, or explanatory text
+* Do NOT create headings or sections
+* Do NOT include any formatting characters or escape sequences (1m, 92m, 0m)
+* Do NOT include opinions or subjective assessments
+* DO preserve exact names, dates, URLs, and numerical data
 CONTENT:
 {content[:MAX_CONTENT_LENGTH]}
 """
@@ -104,26 +113,132 @@ CONTENT:
         logger.error(error_msg)
         return error_msg
 
+def clean_keywords(raw_keywords):
+    """Clean and normalize keyword output from LLM."""
+    try:
+        # Remove escape sequences and formatting codes
+        cleaned = re.sub(r'\d+m|\d+M|\\92m|\\1m|\\0m', '', raw_keywords)
+        
+        # Remove markdown formatting
+        cleaned = re.sub(r'[*_`#]', '', cleaned)
+        
+        # Remove bullets and numbering
+        cleaned = re.sub(r'^\s*[-•*]\s*', '', cleaned)
+        cleaned = re.sub(r'^\s*\d+\.\s*', '', cleaned)
+        
+        # Remove common explanatory phrases and meta-text
+        patterns = [
+            r'Okay.*?:', 
+            r'This is.*?:', 
+            r'Here (?:are|is).*?:', 
+            r'I\'ve extracted.*?:',  # Fixed quote
+            r'The keywords (?:are|include).*?:',
+            r'These (?:are|represent).*?:',
+            r'Keywords:.*?(?=\w)',
+            r'^.*?keywords.*?:',
+            r'For this text about.*?:',
+        ]
+        
+        for pattern in patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Normalize spacing and punctuation
+        cleaned = re.sub(r'\s+', ' ', cleaned)
+        cleaned = cleaned.replace(';', ',').replace('،', ',')  # Normalize delimiters
+        
+        # Split into terms and clean
+        terms = [term.strip() for term in cleaned.split(',') if term.strip()]
+        
+        # Filter out terms that are too long (more than 3 words)
+        terms = [term for term in terms if len(term.split()) <= 3]
+        
+        # Remove duplicates while preserving order
+        unique_terms = []
+        seen = set()
+        for term in terms:
+            term_lower = term.lower()
+            if term_lower not in seen:
+                unique_terms.append(term)
+                seen.add(term_lower)
+        
+        # Join with standard formatting
+        return ', '.join(unique_terms)
+        
+    except Exception as e:
+        logger.error(f"Error cleaning keywords: {e}")
+        # Return original if processing fails, better than nothing
+        return raw_keywords
+
+def clean_resume(raw_resume):
+    """Clean and normalize resume content from LLM."""
+    try:
+        # Remove explanatory phrases and meta-text
+        patterns = [
+            r'Okay,.*?:', 
+            r'This is.*?:', 
+            r'Here (?:are|is).*?:',
+            r'I\'ve extracted.*?:',  # Fixed quote
+            r'Let me summarize.*?:',
+            r'Here\'s a summary.*?:',  # Fixed quote
+        ]
+        
+        cleaned = raw_resume
+        for pattern in patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Normalize bullet formatting
+        cleaned = re.sub(r'(?m)^\s*[-•]\s*', '* ', cleaned)  # Convert other bullets to asterisks
+        cleaned = re.sub(r'(?m)^\s*\d+\.\s*', '* ', cleaned)  # Convert numbering to bullets
+        cleaned = re.sub(r'\*\s+', '* ', cleaned)  # Normalize spacing after bullets
+        
+        # Remove excess whitespace but preserve paragraph breaks
+        cleaned = re.sub(r' +', ' ', cleaned)
+        cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned)
+        
+        # Remove duplicate consecutive paragraphs
+        lines = cleaned.split('\n')
+        unique_lines = []
+        seen_paragraphs = set()
+        
+        for line in lines:
+            line_clean = line.strip()
+            if not line_clean:
+                unique_lines.append(line)
+                continue
+                
+            if line_clean not in seen_paragraphs:
+                unique_lines.append(line)
+                seen_paragraphs.add(line_clean)
+        
+        return '\n'.join(unique_lines).strip()
+        
+    except Exception as e:
+        logger.error(f"Error cleaning resume: {e}")
+        # Return original if processing fails
+        return raw_resume
+
+
 async def generate_keywords(title, content):
     """Generate searchable keywords using the LLM."""
     prompt = f"""You are generating searchable keywords for a database index of "{title}".
 
-Extract ONLY terms and phrases that ACTUALLY APPEAR in the content. Focus on:
+Extract ONLY terms and phrases that ACTUALLY APPEAR in the content about {title}.
 
+EXTRACT EXACTLY:
 1. Names of people, organizations, projects, and places
 2. Technical terms and their variations
 3. Important dates, versions, and events
-4. Relationship patterns (e.g., person-role, project-version combinations)
+4. Relationship patterns (person-role, project-version)
 
-RULES:
-- Include ONLY terms present in the original content
-- Use space separation between terms
-- Keep keywords concise (1-3 words per concept)
-- Do not invent or add any terms not in the original text
-- Use commas to separate terms (no line breaks)
-- Between 20-50 words total
-- Generate diverse, non-repetitive keywords. Each concept, name, or date should appear only once, regardless of how frequently it appears in the source. Only repeat a term when it appears in different contextual combinations.
-- Do not include explanatory text or descriptions in your response
+FORMAT REQUIREMENTS:
+- ONLY use terms present in the original text
+- Format as a simple comma-separated list
+- Keep each term to 1-3 words maximum
+- Between
+20-50 terms total
+- NO explanatory text or meta-commentary
+- NO formatting characters or escape sequences (1m, 92m, 0m)
+- NO duplicates unless in different contextual combinations
 
 CONTENT:
 {content[:MAX_CONTENT_LENGTH]}
@@ -224,9 +339,14 @@ async def process_page(conn, page_id, title, url, content, content_length, force
         
         # Generate resume
         logger.info(f"Generating resume for {title}...")
-        resume = await generate_resume(title, content)
+        raw_resume = await generate_resume(title, content)
+
+        # NEW: Clean the resume before proceeding
+        resume = clean_resume(raw_resume)
         resume_word_count = count_words(resume)
         resume_char_count = len(resume)
+
+        
         
         # Check if resume generation failed or is suspicious
         if "Error:" in resume or resume_word_count < 10:
@@ -237,7 +357,9 @@ async def process_page(conn, page_id, title, url, content, content_length, force
         
         # Generate keywords
         logger.info(f"Generating keywords for {title}...")
-        keywords = await generate_keywords(title, content)
+        raw_keywords = await generate_keywords(title, content)
+        keywords = clean_keywords(raw_keywords)
+
         keywords_word_count = count_words(keywords)
         
         # Check if keyword generation failed

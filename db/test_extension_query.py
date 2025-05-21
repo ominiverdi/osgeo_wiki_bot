@@ -107,7 +107,7 @@ def search_extensions(conn, query, limit=10, search_field='both'):
                     pe.keywords,
                     ((0.6 * ts_rank(pe.resume_tsv, websearch_to_tsquery('english', %s))) + 
                      (0.4 * ts_rank(pe.keywords_tsv, websearch_to_tsquery('english', %s))) + 
-                     CASE WHEN pe.page_title_tsv @@ websearch_to_tsquery('english', %s) THEN 2.5 ELSE 0 END) AS rank,
+                     CASE WHEN pe.page_title_tsv @@ websearch_to_tsquery('english', %s) THEN 1.1 ELSE 0 END) AS rank,
                     ts_headline('english', pe.resume, websearch_to_tsquery('english', %s), 
                                'MaxFragments=2, MaxWords=30, MinWords=5, StartSel=<<, StopSel=>>') AS resume_headline,
                     ts_headline('english', pe.keywords, websearch_to_tsquery('english', %s),
