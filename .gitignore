@@ -182,3 +182,5 @@ tests/queries.sql
 query_results.txt
 search_and_answer_results.json
 db/extension_checkpoint.json
+model_comparison_mini_results.json
+model_comparison_results.json
