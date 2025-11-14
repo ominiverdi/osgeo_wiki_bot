@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
-# db/populate_extension.py - Optimized version with ID-based pagination
+# db/populate_extension.py - Simplified production version
 import os
 import psycopg2
 import asyncio
 import httpx
 from pathlib import Path
-import re
-import time
 import json
 import argparse
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("populate_extension.log"),
         logging.StreamHandler()
@@ -24,460 +21,286 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Load environment variables from .env file
 load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
 
+
+
 # Configuration
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_API_URL = f"{OLLAMA_BASE_URL}/api/generate"
-LLM_MODEL = os.getenv("LLM_MODEL", "wiki-extractor")
+OLLAMA_BASE_URL = "http://localhost:8080"
+OLLAMA_API_URL = f"{OLLAMA_BASE_URL}/v1/chat/completions"
+LLM_MODEL = "mistral-small-128k"
 
-# Content length thresholds
-MIN_CONTENT_LENGTH = 500  # Minimum characters required to generate a resume
-MAX_CONTENT_LENGTH = 30000  # Maximum characters to send to the LLM
+MAX_CONTENT_LENGTH = 20000  # Truncate at 20KB
+LLM_TIMEOUT = 300  # 5 minutes timeout
+CHECKPOINT_FILE = "extension_checkpoint.json"
 
-# Checkpoint file for resume capability
-DEFAULT_CHECKPOINT_FILE = "extension_checkpoint.json"
+WIKI_DUMP_PATH = Path(os.getenv('WIKI_DUMP_PATH', './wiki_dump'))
+
 
 def get_db_connection():
-    """Connect to the PostgreSQL database."""
+    """Connect to PostgreSQL database."""
     try:
-        # Get connection parameters from environment variables
-        db_params = {
-            "host": os.getenv("DB_HOST", "localhost"),
-            "database": os.getenv("DB_NAME", "osgeo_wiki"),
-            "user": os.getenv("DB_USER", "postgres"),
-            "password": os.getenv("DB_PASSWORD", "postgres"),
-            "port": os.getenv("DB_PORT", "5432")
-        }
-        
-        # Connect to the database
-        conn = psycopg2.connect(**db_params)
+        conn = psycopg2.connect(
+            host=os.getenv("DB_HOST", "localhost"),
+            database=os.getenv("DB_NAME", "osgeo_wiki"),
+            user=os.getenv("DB_USER", "postgres"),
+            password=os.getenv("DB_PASSWORD", ""),
+            port=os.getenv("DB_PORT", "5432")
+        )
         conn.autocommit = True
         return conn
-    except psycopg2.Error as e:
-        logger.error(f"Error connecting to PostgreSQL database: {e}")
+    except Exception as e:
+        logger.error(f"Database connection failed: {e}")
         return None
 
-async def generate_resume(title, content):
-    """Generate a resume using the LLM."""
-    prompt = f"""You are generating a database-optimized factual summary of "{title}" ({MIN_CONTENT_LENGTH} characters).
 
-EXTRACT:
-1. Core information about {title} (purpose, definition, function)
-2. Relationships between entities (X is part of Y, X created Y)
-3. Dates, names, URLs, and precise details exactly as stated
-4. Organizational structures or hierarchies
-5. Technical capabilities or specifications
-
-FORMAT REQUIREMENTS:
-* Return ONLY a bulleted list of facts
-* Start each fact with an asterisk (*)
-* Include one key point per bullet
-* Do NOT add introductions, conclusions, or explanatory text
-* Do NOT create headings or sections
-* Do NOT include any formatting characters or escape sequences (1m, 92m, 0m)
-* Do NOT include opinions or subjective assessments
-* DO preserve exact names, dates, URLs, and numerical data
-CONTENT:
-{content[:MAX_CONTENT_LENGTH]}
-"""
-
-    try:
-        payload = {
-            "model": LLM_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0.3,
-                "num_predict": 2048
-            }
-        }
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                OLLAMA_API_URL,
-                json=payload,
-                timeout=120.0  # Increased timeout for larger content
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("response", "")
-            else:
-                error_msg = f"Error: {response.status_code} - {response.text}"
-                logger.error(error_msg)
-                return error_msg
-    except Exception as e:
-        error_msg = f"Error generating resume: {str(e)}"
-        logger.error(error_msg)
-        return error_msg
-
-def clean_keywords(raw_keywords):
-    """Clean and normalize keyword output from LLM."""
-    try:
-        # Remove escape sequences and formatting codes
-        cleaned = re.sub(r'\d+m|\d+M|\\92m|\\1m|\\0m', '', raw_keywords)
-        
-        # Remove markdown formatting
-        cleaned = re.sub(r'[*_`#]', '', cleaned)
-        
-        # Remove bullets and numbering
-        cleaned = re.sub(r'^\s*[-•*]\s*', '', cleaned)
-        cleaned = re.sub(r'^\s*\d+\.\s*', '', cleaned)
-        
-        # Remove common explanatory phrases and meta-text
-        patterns = [
-            r'Okay.*?:', 
-            r'This is.*?:', 
-            r'Here (?:are|is).*?:', 
-            r'I\'ve extracted.*?:',  # Fixed quote
-            r'The keywords (?:are|include).*?:',
-            r'These (?:are|represent).*?:',
-            r'Keywords:.*?(?=\w)',
-            r'^.*?keywords.*?:',
-            r'For this text about.*?:',
-        ]
-        
-        for pattern in patterns:
-            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
-        
-        # Normalize spacing and punctuation
-        cleaned = re.sub(r'\s+', ' ', cleaned)
-        cleaned = cleaned.replace(';', ',').replace('،', ',')  # Normalize delimiters
-        
-        # Split into terms and clean
-        terms = [term.strip() for term in cleaned.split(',') if term.strip()]
-        
-        # Filter out terms that are too long (more than 3 words)
-        terms = [term for term in terms if len(term.split()) <= 3]
-        
-        # Remove duplicates while preserving order
-        unique_terms = []
-        seen = set()
-        for term in terms:
-            term_lower = term.lower()
-            if term_lower not in seen:
-                unique_terms.append(term)
-                seen.add(term_lower)
-        
-        # Join with standard formatting
-        return ', '.join(unique_terms)
-        
-    except Exception as e:
-        logger.error(f"Error cleaning keywords: {e}")
-        # Return original if processing fails, better than nothing
-        return raw_keywords
-
-def clean_resume(raw_resume):
-    """Clean and normalize resume content from LLM."""
-    try:
-        # Remove explanatory phrases and meta-text
-        patterns = [
-            r'Okay,.*?:', 
-            r'This is.*?:', 
-            r'Here (?:are|is).*?:',
-            r'I\'ve extracted.*?:',  # Fixed quote
-            r'Let me summarize.*?:',
-            r'Here\'s a summary.*?:',  # Fixed quote
-        ]
-        
-        cleaned = raw_resume
-        for pattern in patterns:
-            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
-        
-        # Normalize bullet formatting
-        cleaned = re.sub(r'(?m)^\s*[-•]\s*', '* ', cleaned)  # Convert other bullets to asterisks
-        cleaned = re.sub(r'(?m)^\s*\d+\.\s*', '* ', cleaned)  # Convert numbering to bullets
-        cleaned = re.sub(r'\*\s+', '* ', cleaned)  # Normalize spacing after bullets
-        
-        # Remove excess whitespace but preserve paragraph breaks
-        cleaned = re.sub(r' +', ' ', cleaned)
-        cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned)
-        
-        # Remove duplicate consecutive paragraphs
-        lines = cleaned.split('\n')
-        unique_lines = []
-        seen_paragraphs = set()
-        
-        for line in lines:
-            line_clean = line.strip()
-            if not line_clean:
-                unique_lines.append(line)
-                continue
-                
-            if line_clean not in seen_paragraphs:
-                unique_lines.append(line)
-                seen_paragraphs.add(line_clean)
-        
-        return '\n'.join(unique_lines).strip()
-        
-    except Exception as e:
-        logger.error(f"Error cleaning resume: {e}")
-        # Return original if processing fails
-        return raw_resume
-
-
-async def generate_keywords(title, content):
-    """Generate searchable keywords using the LLM."""
-    prompt = f"""You are generating searchable keywords for a database index of "{title}".
-
-Extract ONLY terms and phrases that ACTUALLY APPEAR in the content about {title}.
-
-EXTRACT EXACTLY:
-1. Names of people, organizations, projects, and places
-2. Technical terms and their variations
-3. Important dates, versions, and events
-4. Relationship patterns (person-role, project-version)
-
-FORMAT REQUIREMENTS:
-- ONLY use terms present in the original text
-- Format as a simple comma-separated list
-- Keep each term to 1-3 words maximum
-- Between
-20-50 terms total
-- NO explanatory text or meta-commentary
-- NO formatting characters or escape sequences (1m, 92m, 0m)
-- NO duplicates unless in different contextual combinations
-
-CONTENT:
-{content[:MAX_CONTENT_LENGTH]}
-"""
-
-    try:
-        payload = {
-            "model": LLM_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0.1,
-                "num_predict": 1024
-            }
-        }
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                OLLAMA_API_URL,
-                json=payload,
-                timeout=60.0
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("response", "")
-            else:
-                error_msg = f"Error: {response.status_code} - {response.text}"
-                logger.error(error_msg)
-                return error_msg
-    except Exception as e:
-        error_msg = f"Error generating keywords: {str(e)}"
-        logger.error(error_msg)
-        return error_msg
-
-def count_words(text):
-    """Count the number of words in text."""
-    return len(re.findall(r'\w+', text))
-
-def insert_or_update_page_extension(conn, wiki_url, page_title, resume, keywords):
-    """Insert or update a record in the page_extensions table."""
+def log_error(conn, page_id, title, url, error_type, message, content_size, was_truncated=False, original_size=None):
+    """Log processing error to page_processing_errors table."""
     try:
         with conn.cursor() as cur:
-            # Check if the page already exists in the extensions table
-            cur.execute("SELECT id FROM page_extensions WHERE wiki_url = %s", (wiki_url,))
-            result = cur.fetchone()
-            
-            if result:
-                # Update existing record
-                page_id = result[0]
-                cur.execute("""
-                    UPDATE page_extensions 
-                    SET resume = %s, keywords = %s, last_updated = CURRENT_TIMESTAMP 
-                    WHERE id = %s
-                """, (resume, keywords, page_id))
-                logger.info(f"Updated extension for page: {page_title}")
-                return "updated"
-            else:
-                # Insert new record
-                cur.execute("""
-                    INSERT INTO page_extensions (wiki_url, page_title, resume, keywords)
-                    VALUES (%s, %s, %s, %s)
-                """, (wiki_url, page_title, resume, keywords))
-                logger.info(f"Inserted new extension for page: {page_title}")
-                return "inserted"
+            cur.execute("""
+                INSERT INTO page_processing_errors 
+                (page_id, page_title, wiki_url, error_type, error_message, 
+                 content_size, was_truncated, original_size)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (page_id, title, url, error_type, message, content_size, was_truncated, original_size))
     except Exception as e:
-        logger.error(f"Database error for {page_title}: {e}")
-        return "error"
+        logger.error(f"Failed to log error: {e}")
 
-async def process_page(conn, page_id, title, url, content, content_length, force=False):
-    """Process a single page and insert/update its extension."""
+
+async def call_llm(prompt, timeout=LLM_TIMEOUT):
+    """Call LLM with timeout handling."""
     try:
-        # Check if we should skip this page based on content length
-        if content_length < MIN_CONTENT_LENGTH:
-            logger.info(f"Skipping {title} - content too short ({content_length} chars)")
-            
-            # For very short content, we'll just use the original content as the resume
-            # and extract minimal keywords
-            if force:
-                logger.info(f"Force processing enabled, storing original content as resume")
-                status = insert_or_update_page_extension(
-                    conn, 
-                    url, 
-                    title, 
-                    content, 
-                    title.replace(" ", ", ")  # Simple keywords from title
-                )
-                return status
-            return "skipped"
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                OLLAMA_API_URL,
+                json={
+                    "model": LLM_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.2,
+                    "max_tokens": 4096
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            return result['choices'][0]['message']['content'].strip()
+    except asyncio.TimeoutError:
+        raise TimeoutError(f"LLM call timed out after {timeout}s")
+    except Exception as e:
+        raise Exception(f"LLM call failed: {str(e)}")
+
+
+async def generate_resume(content):
+    """Generate resume from content."""
+    prompt = f"""Extract ONLY the facts that appear in this text. Do not explain or expand.
+
+Rules:
+- Start each line with "* "
+- Copy names, dates, URLs exactly
+- If text is 1-2 sentences, just repeat it with "* " prefix
+- Never explain what terms mean
+
+Text:
+{content}
+
+BULLET POINTS:"""
+    
+    return await call_llm(prompt)
+
+
+async def generate_keywords(content):
+    """Generate keywords from content."""
+    prompt = f"""Extract keywords that appear in this text. Do not add related terms.
+
+Include: names, organizations, projects, technical terms, dates.
+Maximum 30 keywords, comma-separated.
+If minimal content, write: placeholder
+
+Text:
+{content}
+
+KEYWORDS:"""
+    
+    return await call_llm(prompt)
+
+
+def load_checkpoint():
+    """Load checkpoint or return default."""
+    try:
+        with open(CHECKPOINT_FILE, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"last_id": 0, "processed": 0, "timestamp": None}
+
+
+def save_checkpoint(last_id, processed):
+    """Save checkpoint."""
+    with open(CHECKPOINT_FILE, 'w') as f:
+        json.dump({
+            "last_id": last_id,
+            "processed": processed,
+            "timestamp": datetime.now().isoformat()
+        }, f)
+
+
+def get_pages(conn, last_id=0, limit=None):
+    """Get pages to process."""
+    with conn.cursor() as cur:
+        query = """
+            SELECT p.id, p.title, p.url
+            FROM pages p
+            LEFT JOIN page_extensions pe ON p.url = pe.wiki_url
+            WHERE p.id > %s AND pe.wiki_url IS NULL
+            ORDER BY p.id
+        """
+        if limit:
+            query += f" LIMIT {limit}"
         
-        # Check if page is already processed and we're not forcing an update
-        if not force:
-            with conn.cursor() as cur:
-                cur.execute("SELECT id FROM page_extensions WHERE wiki_url = %s", (url,))
-                if cur.fetchone():
-                    logger.info(f"Skipping {title} - already processed")
-                    return "skipped"
+        cur.execute(query, (last_id,))
+        return cur.fetchall()
+
+
+def get_content(conn, url):
+    """Get page content from chunks."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT content 
+            FROM page_chunks 
+            WHERE page_id = (SELECT id FROM pages WHERE url = %s)
+            ORDER BY chunk_number
+        """, (url,))
+        
+        chunks = cur.fetchall()
+        if not chunks:
+            return None, 0
+        
+        full_content = ' '.join(chunk[0] for chunk in chunks)
+        original_size = len(full_content)
+        
+        # Truncate if needed
+        was_truncated = False
+        if len(full_content) > MAX_CONTENT_LENGTH:
+            full_content = full_content[:MAX_CONTENT_LENGTH] + "\n\n[Content truncated at 20KB]"
+            was_truncated = True
+        
+        return full_content, original_size, was_truncated
+
+
+def save_extension(conn, url, title, resume, keywords):
+    """Save to page_extensions table."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO page_extensions (wiki_url, page_title, resume, keywords, last_updated)
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (wiki_url) 
+            DO UPDATE SET 
+                resume = EXCLUDED.resume,
+                keywords = EXCLUDED.keywords,
+                last_updated = CURRENT_TIMESTAMP
+        """, (url, title, resume, keywords))
+
+
+async def process_page(conn, page_id, title, url):
+    """Process a single page."""
+    try:
+        # Get content
+        # result = get_content(conn, url)
+        result = get_content_from_dump(WIKI_DUMP_PATH, url)
+        if not result or result[0] is None:
+            log_error(conn, page_id, title, url, "no_content", "No content found", 0)
+            return "error"
+        
+        content, original_size, was_truncated = result
+        content_size = len(content)
         
         # Generate resume
-        logger.info(f"Generating resume for {title}...")
-        raw_resume = await generate_resume(title, content)
-
-        # NEW: Clean the resume before proceeding
-        resume = clean_resume(raw_resume)
-        resume_word_count = count_words(resume)
-        resume_char_count = len(resume)
-
-        
-        
-        # Check if resume generation failed or is suspicious
-        if "Error:" in resume or resume_word_count < 10:
-            logger.warning(f"Resume generation may have failed for {title}: {resume[:100]}...")
-            if force:
-                # Use the original content as a fallback
-                resume = content
+        logger.info(f"  Generating resume...")
+        try:
+            resume = await generate_resume(content)
+            if len(resume) < 50:
+                raise Exception("Resume too short")
+        except TimeoutError as e:
+            log_error(conn, page_id, title, url, "timeout", str(e), content_size, was_truncated, original_size)
+            return "timeout"
+        except Exception as e:
+            log_error(conn, page_id, title, url, "llm_error", str(e), content_size, was_truncated, original_size)
+            return "error"
         
         # Generate keywords
-        logger.info(f"Generating keywords for {title}...")
-        raw_keywords = await generate_keywords(title, content)
-        keywords = clean_keywords(raw_keywords)
-
-        keywords_word_count = count_words(keywords)
+        logger.info(f"  Generating keywords...")
+        try:
+            keywords = await generate_keywords(content)
+            if len(keywords) < 10:
+                raise Exception("Keywords too short")
+        except TimeoutError as e:
+            log_error(conn, page_id, title, url, "timeout", str(e), content_size, was_truncated, original_size)
+            return "timeout"
+        except Exception as e:
+            log_error(conn, page_id, title, url, "llm_error", str(e), content_size, was_truncated, original_size)
+            return "error"
         
-        # Check if keyword generation failed
-        if "Error:" in keywords or keywords_word_count < 5:
-            logger.warning(f"Keyword generation may have failed for {title}: {keywords[:100]}...")
-            if force:
-                # Use the title words as a fallback
-                keywords = title.replace(" ", ", ")
+        # Save
+        save_extension(conn, url, title, resume, keywords)
         
-        # Log statistics
-        logger.info(f"Generated resume: {resume_word_count} words, {resume_char_count} chars")
-        logger.info(f"Generated keywords: {keywords_word_count} words, {len(keywords)} chars")
+        # Log if truncated
+        if was_truncated:
+            log_error(conn, page_id, title, url, "truncated", 
+                     f"Content truncated from {original_size} to {content_size} chars",
+                     content_size, True, original_size)
         
-        # Insert or update in database
-        return insert_or_update_page_extension(conn, url, title, resume, keywords)
-    
+        logger.info(f"  ✓ Saved (resume: {len(resume)} chars, keywords: {len(keywords)} chars)")
+        return "success"
+        
     except Exception as e:
-        logger.error(f"Error processing {title}: {e}")
+        logger.error(f"  ✗ Error: {e}")
+        log_error(conn, page_id, title, url, "other", str(e), 0)
         return "error"
-
-def get_pages_to_process(conn, limit=None, last_id=0, already_processed=False, random_order=False):
-    """Get pages that need processing using ID-based pagination."""
+def get_content_from_dump(wiki_dump_path, url):
+    """Get page content from wiki dump file."""
     try:
-        with conn.cursor() as cur:
-            # Base query to get pages
-            query = """
-                SELECT p.id, p.title, p.url, 
-                       string_agg(pc.chunk_text, ' ' ORDER BY pc.chunk_index) as full_content,
-                       COUNT(pc.id) as chunk_count
-                FROM pages p
-                JOIN page_chunks pc ON p.id = pc.page_id
-            """
+        # Find the file by matching URL
+        for filepath in wiki_dump_path.glob('*'):
+            if filepath.name == 'url_map.json':
+                continue
             
-            # Add conditions
-            conditions = []
-            
-            # Add condition for ID-based pagination
-            if last_id > 0:
-                conditions.append(f"p.id > {last_id}")
-            
-            # Add condition for already processed pages if requested
-            if not already_processed:
-                conditions.append("NOT EXISTS (SELECT 1 FROM page_extensions pe WHERE pe.wiki_url = p.url)")
-            
-            # Add WHERE clause if we have conditions
-            if conditions:
-                query += " WHERE " + " AND ".join(conditions)
-            
-            # Group by page
-            query += " GROUP BY p.id, p.title, p.url"
-            
-            # Add ordering
-            if random_order:
-                query += " ORDER BY RANDOM()"
-            else:
-                query += " ORDER BY p.id"  # Ensures we process in ID order
-            
-            # Add limit if specified
-            if limit:
-                query += f" LIMIT {limit}"
-            
-            # Execute query
-            cur.execute(query)
-            return cur.fetchall()
+            with open(filepath, 'r', encoding='utf-8') as f:
+                first_line = f.readline()
+                if first_line.strip() == f'URL: {url}':
+                    # Found the right file, read full content
+                    f.seek(0)
+                    content = f.read()
+                    
+                    # Extract content after "Content:" line
+                    lines = content.split('\n')
+                    content_start = 0
+                    for i, line in enumerate(lines):
+                        if line.strip() == 'Content:':
+                            content_start = i + 1
+                            break
+                    
+                    page_content = '\n'.join(lines[content_start:]).strip()
+                    original_size = len(page_content)
+                    
+                    # Truncate if needed
+                    was_truncated = False
+                    if len(page_content) > MAX_CONTENT_LENGTH:
+                        page_content = page_content[:MAX_CONTENT_LENGTH] + "\n\n[Content truncated at 20KB]"
+                        was_truncated = True
+                    
+                    return page_content, original_size, was_truncated
+        
+        return None, 0, False
+        
     except Exception as e:
-        logger.error(f"Error getting pages to process: {e}")
-        return []
+        logger.error(f"Error reading wiki dump: {e}")
+        return None, 0, False
 
-def save_checkpoint(checkpoint_file, data):
-    """Save checkpoint to a file."""
-    try:
-        checkpoint_path = os.path.abspath(checkpoint_file)
-        with open(checkpoint_path, 'w') as f:
-            json.dump(data, f, indent=2)
-        print(f"\nCheckpoint saved to {checkpoint_path}")
-        logger.info(f"Checkpoint saved to {checkpoint_path}")
-        return True
-    except Exception as e:
-        logger.error(f"Error saving checkpoint: {e}")
-        return False
-
-def load_checkpoint(checkpoint_file):
-    """Load checkpoint from a file."""
-    try:
-        checkpoint_path = os.path.abspath(checkpoint_file)
-        with open(checkpoint_path, 'r') as f:
-            data = json.load(f)
-        logger.info(f"Checkpoint loaded from {checkpoint_path}")
-        return data
-    except FileNotFoundError:
-        logger.warning(f"Checkpoint file {checkpoint_path} not found. Starting new run.")
-        return None
-    except Exception as e:
-        logger.error(f"Error loading checkpoint: {e}")
-        return None
-
-def get_total_pages(conn, already_processed=False):
-    """Get the total number of pages that match the criteria."""
-    try:
-        with conn.cursor() as cur:
-            query = "SELECT COUNT(*) FROM pages"
-            
-            if not already_processed:
-                query += """ WHERE NOT EXISTS (
-                    SELECT 1 FROM page_extensions pe WHERE pe.wiki_url = pages.url
-                )"""
-            
-            cur.execute(query)
-            return cur.fetchone()[0]
-    except Exception as e:
-        logger.error(f"Error getting total pages: {e}")
-        return 0
-
-async def main_async(args):
-    """Process pages asynchronously."""
-    print(f"=== Populating page_extensions table ===")
-    checkpoint_path = os.path.abspath(args.checkpoint_file)
-    print(f"Checkpoint file: {checkpoint_path}")
+async def main():
+    parser = argparse.ArgumentParser(description="Populate page extensions with LLM summaries")
+    parser.add_argument("--limit", type=int, help="Limit number of pages to process")
+    parser.add_argument("--delay", type=float, default=0, help="Delay between pages (seconds)")
+    parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
+    args = parser.parse_args()
     
     # Connect to database
     conn = get_db_connection()
@@ -485,187 +308,63 @@ async def main_async(args):
         logger.error("Failed to connect to database")
         return
     
-    try:
-        # Initialize or load checkpoint
-        last_id = 0
-        stats = {"inserted": 0, "updated": 0, "skipped": 0, "error": 0}
-        start_time = time.time()
-        processed_count = 0
-        
-        if args.resume and os.path.exists(args.checkpoint_file):
-            checkpoint_data = load_checkpoint(args.checkpoint_file)
-            if checkpoint_data:
-                last_id = checkpoint_data.get("last_id", 0)
-                stats = checkpoint_data.get("stats", stats)
-                start_time = checkpoint_data.get("start_time", start_time)
-                processed_count = checkpoint_data.get("processed_count", 0)
-                
-                logger.info(f"Resuming from checkpoint: {processed_count} pages processed, last ID: {last_id}")
-        
-        # Get total pages for progress tracking
-        total_eligible = get_total_pages(conn, already_processed=args.force)
-        logger.info(f"Total eligible pages: {total_eligible}")
-        
-        # Process pages in batches to avoid memory issues
-        batch_size = min(100, args.limit if args.limit else 100)
-        remaining = args.limit if args.limit else total_eligible
-        
-        # Main processing loop
-        while remaining > 0:
-            current_batch = min(batch_size, remaining)
-            
-            # Get batch of pages to process using ID-based pagination
-            logger.info(f"Fetching batch of {current_batch} pages (last_id={last_id}, force={args.force}, random={args.random})")
-            pages = get_pages_to_process(
-                conn, 
-                limit=current_batch,
-                last_id=last_id,
-                already_processed=args.force,
-                random_order=args.random
-            )
-            
-            if not pages:
-                logger.info("No pages to process")
-                break
-            
-            # Log number of pages found
-            logger.info(f"Found {len(pages)} pages to process")
-            
-            # Track highest ID in this batch (for checkpoint)
-            batch_highest_id = last_id
-            
-            # Process each page in the batch
-            for idx, (page_id, title, url, content, chunk_count) in enumerate(pages, 1):
-                global_idx = processed_count + idx
-                logger.info(f"Processing {global_idx}/{total_eligible}: {title} (ID: {page_id})")
-                content_length = len(content) if content else 0
-                
-                # Update highest ID
-                batch_highest_id = max(batch_highest_id, page_id)
-                
-                # Log page details
-                print(f"\nPage: {title}")
-                print(f"Page ID: {page_id}")
-                print(f"Wiki URL: {url}")
-                print(f"Content length: ({count_words(content)} words, {content_length} characters)")
-                
-                # Process the page
-                result = await process_page(conn, page_id, title, url, content, content_length, args.force)
-                stats[result] = stats.get(result, 0) + 1
-                
-                # Update checkpoint after every 10 pages
-                if idx % 10 == 0 or idx == len(pages):
-                    checkpoint = {
-                        "timestamp": datetime.now().isoformat(),
-                        "last_id": batch_highest_id,
-                        "processed_count": processed_count + idx,
-                        "stats": stats,
-                        "start_time": start_time,
-                        "last_processed_title": title,
-                        "last_processed_url": url
-                    }
-                    save_checkpoint(args.checkpoint_file, checkpoint)
-                
-                # Progress information
-                elapsed = time.time() - start_time
-                pages_per_second = global_idx / elapsed if elapsed > 0 else 0
-                remaining_pages = total_eligible - global_idx
-                eta_seconds = remaining_pages / pages_per_second if pages_per_second > 0 else 0
-                
-                # Display progress
-                print(f"Progress: {global_idx}/{total_eligible} pages")
-                print(f"Stats: {stats}")
-                print(f"Speed: {pages_per_second:.2f} pages/sec, ETA: {eta_seconds/3600:.1f} hours")
-                
-                # Respect rate limits for the LLM service
-                if idx < len(pages) and args.delay > 0:
-                    await asyncio.sleep(args.delay)
-            
-            # Update counters for next batch
-            processed_count += len(pages)
-            last_id = batch_highest_id
-            remaining -= len(pages)
-            
-            # Final checkpoint for this batch
-            checkpoint = {
-                "timestamp": datetime.now().isoformat(),
-                "last_id": last_id,
-                "processed_count": processed_count,
-                "stats": stats,
-                "start_time": start_time,
-                "last_processed_title": pages[-1][1] if pages else "",
-                "last_processed_url": pages[-1][2] if pages else ""
-            }
-            save_checkpoint(args.checkpoint_file, checkpoint)
-        
-        # Log final statistics
-        elapsed = time.time() - start_time
-        print("\n=== Processing complete ===")
-        print(f"Elapsed time: {elapsed:.2f} seconds")
-        print(f"Pages processed: {processed_count}")
-        print(f"Results: {stats}")
-        
-    finally:
-        if conn:
-            conn.close()
-
-def main():
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Populate page_extensions table with LLM-generated content")
-    parser.add_argument("--limit", type=int, default=None, help="Limit the number of pages to process")
-    parser.add_argument("--force", action="store_true", help="Force processing even if pages are already in the extensions table")
-    parser.add_argument("--random", action="store_true", help="Process pages in random order")
-    parser.add_argument("--delay", type=float, default=6.0, help="Delay between page processing (seconds)")
-    parser.add_argument("--resume", action="store_true", help="Resume from checkpoint file")
-    parser.add_argument("--checkpoint-file", default=DEFAULT_CHECKPOINT_FILE, help="Checkpoint file path")
-    parser.add_argument("--show-checkpoint", action="store_true", help="Display the contents of the checkpoint file and exit")
-    parser.add_argument("--init-checkpoint", action="store_true", help="Create initial checkpoint immediately")
+    # Load checkpoint
+    checkpoint = load_checkpoint() if args.resume else {"last_id": 0, "processed": 0}
+    last_id = checkpoint["last_id"]
+    total_processed = checkpoint["processed"]
     
-    args = parser.parse_args()
+    logger.info("="*70)
+    logger.info(f"OSGeo Wiki Extension Population")
+    logger.info("="*70)
+    logger.info(f"Model: {LLM_MODEL}")
+    logger.info(f"Max content size: {MAX_CONTENT_LENGTH} chars")
+    logger.info(f"Timeout: {LLM_TIMEOUT}s")
+    if args.resume:
+        logger.info(f"Resuming from ID: {last_id} ({total_processed} already processed)")
+    logger.info("="*70 + "\n")
     
-    # Show checkpoint if requested
-    if args.show_checkpoint:
-        if os.path.exists(args.checkpoint_file):
-            try:
-                with open(args.checkpoint_file, 'r') as f:
-                    checkpoint = json.load(f)
-                    print("\nCheckpoint Contents:")
-                    print(f"Timestamp: {checkpoint.get('timestamp')}")
-                    print(f"Last ID: {checkpoint.get('last_id')}")
-                    print(f"Pages Processed: {checkpoint.get('processed_count')}")
-                    print(f"Statistics: {checkpoint.get('stats')}")
-                    print(f"Last Processed Page: {checkpoint.get('last_processed_title')}")
-                    print(f"Last Processed URL: {checkpoint.get('last_processed_url')}")
-                    
-                    # Show full checkpoint in debug mode
-                    if os.getenv("DEBUG"):
-                        print("\nFull Checkpoint Data:")
-                        print(json.dumps(checkpoint, indent=2))
-            except Exception as e:
-                print(f"Error reading checkpoint file: {e}")
-        else:
-            print(f"Checkpoint file not found: {args.checkpoint_file}")
+    # Get pages to process
+    pages = get_pages(conn, last_id, args.limit)
+    if not pages:
+        logger.info("No pages to process")
+        conn.close()
         return
     
-    # Create initial checkpoint if requested
-    if args.init_checkpoint:
-        initial_checkpoint = {
-            "timestamp": datetime.now().isoformat(),
-            "last_id": 0,
-            "processed_count": 0,
-            "stats": {"inserted": 0, "updated": 0, "skipped": 0, "error": 0},
-            "start_time": time.time(),
-            "last_processed_title": "",
-            "last_processed_url": ""
-        }
-        print(f"Creating initial checkpoint file at {os.path.abspath(args.checkpoint_file)}...")
-        save_checkpoint(args.checkpoint_file, initial_checkpoint)
-        print("Initial checkpoint created.")
-        if not args.resume:
-            return
+    logger.info(f"Found {len(pages)} pages to process\n")
     
-    # Run the async main function
-    asyncio.run(main_async(args))
+    # Process pages
+    start_time = asyncio.get_event_loop().time()
+    for i, (page_id, title, url) in enumerate(pages, 1):
+        logger.info(f"[{i}/{len(pages)}] {title}")
+        
+        result = await process_page(conn, page_id, title, url)
+        
+        if result == "success":
+            total_processed += 1
+        
+        # Save checkpoint every 10 pages
+        if i % 10 == 0:
+            save_checkpoint(page_id, total_processed)
+            elapsed = asyncio.get_event_loop().time() - start_time
+            rate = i / elapsed if elapsed > 0 else 0
+            logger.info(f"  Checkpoint saved. Rate: {rate:.2f} pages/sec\n")
+        
+        # Delay if specified
+        if args.delay > 0:
+            await asyncio.sleep(args.delay)
+    
+    # Final save
+    save_checkpoint(pages[-1][0], total_processed)
+    
+    elapsed = asyncio.get_event_loop().time() - start_time
+    logger.info("\n" + "="*70)
+    logger.info(f"COMPLETE: {len(pages)} pages in {elapsed/60:.1f} minutes")
+    logger.info(f"Total processed this session: {len(pages)}")
+    logger.info(f"Total processed overall: {total_processed}")
+    logger.info("="*70)
+    
+    conn.close()
+
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
