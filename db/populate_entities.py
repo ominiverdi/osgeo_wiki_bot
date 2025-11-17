@@ -362,8 +362,7 @@ def get_pages(conn, last_id=0, limit=None):
         query = """
             SELECT DISTINCT p.id, p.title, p.url
             FROM pages p
-            WHERE p.id > %s
-            AND NOT EXISTS (
+            WHERE NOT EXISTS (
                 SELECT 1 FROM entities e WHERE e.source_page_id = p.id
             )
             ORDER BY p.id
@@ -371,7 +370,7 @@ def get_pages(conn, last_id=0, limit=None):
         if limit:
             query += f" LIMIT {limit}"
         
-        cur.execute(query, (last_id,))
+        cur.execute(query)
         return cur.fetchall()
 
 
