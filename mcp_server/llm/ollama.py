@@ -6,44 +6,44 @@ from ..config import settings
 from .keyword_extraction import create_keyword_extraction_prompt, extract_keywords_from_response
 from .response_gen import create_response_generation_prompt, create_context_aware_response_prompt
 
-class OllamaClient:
+class LLMClient:
+    """Client for llama.cpp server using OpenAI-compatible API."""
+    
     def __init__(self, base_url: str = None, model: str = None):
-        self.base_url = base_url or settings.OLLAMA_BASE_URL
-        self.model = model
-        self.generate_endpoint = f"{self.base_url}/api/generate"
+        self.base_url = base_url or settings.LLM_BASE_URL
+        self.model = model or settings.LLM_MODEL
+        self.generate_endpoint = f"{self.base_url}/v1/chat/completions"
     
     async def generate(self, 
                       prompt: str, 
                       model: Optional[str] = None,
                       temperature: float = 0.7,
                       max_tokens: int = 2048) -> str:
-        """Generate text using Ollama API."""
+        """Generate text using llama.cpp OpenAI-compatible API."""
         model_to_use = model or self.model
         if not model_to_use:
             raise ValueError("Model name must be provided")
             
         payload = {
             "model": model_to_use,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": temperature,
-                "num_predict": max_tokens
-            }
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens
         }
         
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 self.generate_endpoint,
-                json=payload,
-                timeout=60.0  # Longer timeout for model generation
+                json=payload
             )
             
             if response.status_code != 200:
-                raise Exception(f"Ollama API error: {response.status_code} - {response.text}")
+                raise Exception(f"LLM API error: {response.status_code} - {response.text}")
                 
             result = response.json()
-            return result["response"]
+            return result["choices"][0]["message"]["content"]
     
     async def extract_keywords(self, query: str, keyword_cloud: str, categories: list) -> dict:
         """Extract keywords from a natural language query."""
@@ -70,7 +70,7 @@ class OllamaClient:
         return await self.generate(
             prompt=prompt,
             model=self.model,
-            temperature=settings.RESPONSE_TEMPERATURE  # Higher temperature for more natural responses
+            temperature=settings.RESPONSE_TEMPERATURE
         )
     
     async def generate_response_with_context(
@@ -81,5 +81,5 @@ class OllamaClient:
         return await self.generate(
             prompt=prompt,
             model=self.model,
-            temperature=settings.RESPONSE_TEMPERATURE  # Higher temperature for more natural responses
+            temperature=settings.RESPONSE_TEMPERATURE
         )

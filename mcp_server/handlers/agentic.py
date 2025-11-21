@@ -7,6 +7,7 @@ import json
 import re
 import time
 import logging
+from datetime import datetime
 from typing import Dict, List, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -103,7 +104,7 @@ def format_results_for_llm(results: List[Dict[str, Any]], result_type: str) -> s
     for i, r in enumerate(results[:5], 1):
         if result_type == 'semantic':
             title = r.get('page_title', 'Unknown')
-            resume = r.get('resume', '')[:100]
+            resume = r.get('resume', '')
             lines.append(f"{i}. {title}: {resume}")
         elif result_type == 'graph':
             subj = r.get('subject', '')
@@ -112,7 +113,7 @@ def format_results_for_llm(results: List[Dict[str, Any]], result_type: str) -> s
             lines.append(f"{i}. {subj} {pred} {obj}")
         elif result_type == 'fulltext':
             title = r.get('title', 'Unknown')
-            text = r.get('chunk_text', '')[:100]
+            text = r.get('chunk_text', '')
             lines.append(f"{i}. {title}: {text}")
     
     return "\n".join(lines)
@@ -183,7 +184,7 @@ async def agentic_search(
     Agentic search that tries multiple strategies until finding good answers.
     
     Args:
-        llm_client: OllamaClient instance for LLM calls
+        llm_client: LLMClient instance for LLM calls
         db_execute_fn: Function to execute SQL queries (returns list of dicts)
         user_query: User's natural language query
         max_iterations: Maximum search iterations to try
@@ -192,6 +193,9 @@ async def agentic_search(
         Dict with 'answer', 'iterations', 'total_time_ms', 'search_history'
     """
     logger.info(f"Starting agentic search for: {user_query}")
+    
+    # Get current date for temporal context
+    current_date = datetime.now().strftime("%Y-%m-%d")
     
     search_history = []
     total_time = 0
@@ -217,7 +221,9 @@ async def agentic_search(
         blocked_text = "\n".join([f"- {b} (already tried)" for b in blocked]) if blocked else "None"
         available_text = "\n".join([f"- {a}" for a in available])
         
-        decision_prompt = f"""Query: {user_query}
+        decision_prompt = f"""TODAY'S DATE: {current_date}
+
+Query: {user_query}
 
 ALREADY TRIED:
 {blocked_text}
@@ -257,7 +263,9 @@ Return JSON: {{"action": "...", "reasoning": "one sentence, max 20 words"}}"""
                 logger.warning("Chose 'done' but no searches performed")
                 break
             
-            answer_prompt = f"""Query: {user_query}
+            answer_prompt = f"""TODAY'S DATE: {current_date}
+
+Query: {user_query}
 
 RESULTS:
 {search_history[-1]['formatted_results']}
@@ -273,6 +281,7 @@ Provide a clear answer (plain text, not JSON)."""
             
             return {
                 'answer': answer,
+                'success': True,
                 'iterations': iteration,
                 'total_time_ms': total_time * 1000,
                 'search_history': search_history
@@ -327,7 +336,9 @@ Provide a clear answer (plain text, not JSON)."""
         
         # STEP 4: Evaluate if we can answer
         if results:
-            eval_prompt = f"""Query: {user_query}
+            eval_prompt = f"""TODAY'S DATE: {current_date}
+
+Query: {user_query}
 
 FOUND:
 {formatted_results}
@@ -354,11 +365,16 @@ Return EXACTLY ONE JSON object:
                 
                 if evaluation['can_answer']:
                     # Generate final answer
-                    answer_prompt = f"""Query: {user_query}
+                    answer_prompt = f"""TODAY'S DATE: {current_date}
+
+Query: {user_query}
 
 RESULTS:
 {formatted_results}
 
+Answer using ONLY information from these search results. 
+If results don't contain the answer, say "The wiki doesn't have this information."
+Do not use outside knowledge.
 Provide clear answer (plain text, not JSON)."""
 
                     step5_start = time.time()
@@ -370,6 +386,7 @@ Provide clear answer (plain text, not JSON)."""
                     
                     return {
                         'answer': answer,
+                        'success': True, 
                         'iterations': iteration,
                         'total_time_ms': total_time * 1000,
                         'search_history': search_history
@@ -384,7 +401,9 @@ Provide clear answer (plain text, not JSON)."""
     
     # Generate best-effort answer
     if search_history and search_history[-1]['result_count'] > 0:
-        answer_prompt = f"""Query: {user_query}
+        answer_prompt = f"""TODAY'S DATE: {current_date}
+
+Query: {user_query}
 
 RESULTS (limited search):
 {search_history[-1]['formatted_results']}
@@ -397,6 +416,7 @@ Provide answer based on available data (plain text)."""
     
     return {
         'answer': answer,
+        'success': False,
         'iterations': max_iterations,
         'total_time_ms': total_time * 1000,
         'search_history': search_history
@@ -444,50 +464,70 @@ LIMIT 10;
 Return ONLY the SQL, no explanation."""
 
     elif action == 'search_semantic':
-        return f"""Generate SQL for semantic search.
+        return f"""Generate SQL for semantic search using page summaries.
 
 Query: {user_query}
 
 Table: page_extensions (page_title, wiki_url, resume, keywords, resume_tsv, keywords_tsv)
 
-IMPORTANT: Always include page_title and wiki_url.
+CRITICAL INSTRUCTIONS:
+1. Title matching gets 2.5 point boost
+2. Use ILIKE for title matching
+3. Search both resume_tsv and keywords_tsv
+4. Return page_title, wiki_url, resume, keywords
 
 Template:
 SELECT 
     page_title, 
     wiki_url,
     resume, 
-    keywords
+    keywords,
+    (CASE WHEN page_title ILIKE '%<main_term>%' THEN 2.5 ELSE 0 END +
+     0.6 * ts_rank(resume_tsv, websearch_to_tsquery('english', '<terms>')) + 
+     0.4 * ts_rank(keywords_tsv, websearch_to_tsquery('english', '<terms>'))) as rank
 FROM page_extensions
 WHERE resume_tsv @@ websearch_to_tsquery('english', '<terms>')
-ORDER BY ts_rank(resume_tsv, websearch_to_tsquery('english', '<terms>')) DESC
+   OR keywords_tsv @@ websearch_to_tsquery('english', '<terms>')
+   OR page_title ILIKE '%<main_term>%'
+ORDER BY rank DESC
 LIMIT 5;
+
+Replace <main_term> with the primary search term (e.g., 'GDAL', 'PostGIS', 'QGIS').
+Replace <terms> with full search terms.
 
 Return ONLY the SQL, no explanation."""
 
     elif action == 'search_fulltext':
-        return f"""Generate SQL for fulltext search.
+        return f"""Generate SQL for fulltext search using page chunks.
 
 Query: {user_query}
 
 Tables: 
-- page_chunks (chunk_text, tsv)
+- page_chunks (page_id, chunk_text, tsv)
 - pages (id, title, url)
 
-IMPORTANT: 
-1. Use tsv column for ts_rank, not chunk_text
-2. Always include title and url from pages table
+CRITICAL INSTRUCTIONS:
+1. Title matching gets 2.5 point boost
+2. Use tsv column for ts_rank (NOT chunk_text)
+3. Join: page_chunks.page_id = pages.id
+4. Use ILIKE for title matching
 
 Template:
 SELECT 
     p.title, 
     p.url,
-    pc.chunk_text
+    pc.chunk_text,
+    (CASE WHEN p.title ILIKE '%<main_term>%' THEN 2.5 ELSE 0 END +
+     ts_rank(pc.tsv, websearch_to_tsquery('english', '<terms>'))) as rank
 FROM page_chunks pc
 JOIN pages p ON pc.page_id = p.id
 WHERE pc.tsv @@ websearch_to_tsquery('english', '<terms>')
-ORDER BY ts_rank(pc.tsv, websearch_to_tsquery('english', '<terms>')) DESC
+   OR p.title ILIKE '%<main_term>%'
+ORDER BY rank DESC
 LIMIT 5;
+
+Replace <main_term> with the primary search term.
+Replace <terms> with full search terms.
 
 Return ONLY the SQL, no explanation."""
 

@@ -20,8 +20,8 @@ class Settings:
     DB_USER = os.getenv("DB_USER")
     DB_PASSWORD = os.getenv("DB_PASSWORD")
     
-    # Ollama settings
-    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
+    # LLM settings (renamed from OLLAMA)
+    LLM_BASE_URL = os.getenv("LLM_BASE_URL")
     LLM_MODEL = os.getenv("LLM_MODEL")
 
     # LLM temperature settings
@@ -32,8 +32,6 @@ class Settings:
     HOST = os.getenv("HOST", "0.0.0.0")
     PORT = int(os.getenv("PORT", "8000"))
     DEBUG = os.getenv("DEBUG", "False").lower() == "true"
-
-
 
     # Query alternative settings
     QUERY_ALTERNATIVES_MIN = int(os.getenv("QUERY_ALTERNATIVES_MIN", "3"))
@@ -47,5 +45,6 @@ settings = Settings()
 
 # Debug output to verify settings are loaded correctly
 print(f"Using LLM model: {settings.LLM_MODEL}")
+print(f"LLM endpoint: {settings.LLM_BASE_URL}")
 print(f"Database: {settings.DB_USER}@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}")
 print(f"Debug mode: {settings.DEBUG}")

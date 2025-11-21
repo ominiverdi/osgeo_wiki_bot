@@ -1,3 +1,4 @@
+# mcp_client/matrix/handlers.py
 import json
 import time
 import re
@@ -50,9 +51,7 @@ class MessageHandler:
         self.last_response_time[room_id] = current_time
         
         # Process the query through MCP server
-        # logger.debug(f"Sending to MCP server: '{message}'")
         response = await self._send_to_mcp(room_id, message)
-        # logger.debug(f"MCP response received: {response is not None}")
         
         # If we got a response, return it
         if response:
@@ -78,18 +77,13 @@ class MessageHandler:
             "context": context.get("context") if context else None
         }
         
-        # logger.debug(f"MCP request data: {request_data}")
-        
         try:
             async with httpx.AsyncClient() as client:
-                # logger.debug(f"Sending request to MCP server: {self.mcp_server_url}")
                 response = await client.post(
                     self.mcp_server_url,
                     json=request_data,
                     timeout=60.0  # Long timeout for complex queries
                 )
-                
-                # logger.debug(f"MCP server status code: {response.status_code}")
                 
                 if response.status_code != 200:
                     logger.error(f"Error from MCP server: {response.status_code}")
@@ -97,7 +91,6 @@ class MessageHandler:
                     return None
                 
                 response_data = response.json()
-                # logger.debug(f"MCP server response data: {response_data}")
                 
                 # Update internal conversation state
                 if "context" in response_data:
@@ -121,11 +114,17 @@ class MessageHandler:
                         if len(self.conversations[room_id]["history"]) > 20:
                             self.conversations[room_id]["history"] = self.conversations[room_id]["history"][-20:]
                 
-                # Return the response text
+                # Extract the answer text
+                answer_text = ""
                 if "message" in response_data and "content" in response_data["message"]:
-                    return response_data["message"]["content"]
+                    answer_text = response_data["message"]["content"]
                 
-                return None
+                # Extract and format sources
+                if "sources" in response_data and response_data["sources"]:
+                    sources_text = self._format_sources(response_data["sources"])
+                    answer_text = f"{answer_text}\n\n{sources_text}"
+                
+                return answer_text
         
         except httpx.ConnectError:
             logger.error(f"Could not connect to MCP server at {self.mcp_server_url}")
@@ -133,6 +132,28 @@ class MessageHandler:
         except Exception as e:
             logger.error(f"Error sending query to MCP server: {e}")
             return None
+    
+    def _format_sources(self, sources: List[Dict[str, str]]) -> str:
+        """
+        Format sources as Matrix-friendly text with clickable links.
+        
+        Args:
+            sources: List of dicts with 'title' and 'url' keys
+            
+        Returns:
+            Formatted string with sources
+        """
+        if not sources:
+            return ""
+        
+        lines = ["Sources:"]
+        for source in sources:
+            title = source.get('title', 'Unknown')
+            url = source.get('url', '')
+            # Matrix will auto-link URLs
+            lines.append(f"- {title}\n  {url}")
+        
+        return "\n".join(lines)
     
     def _parse_message(self, message: str) -> Tuple[bool, str]:
         """

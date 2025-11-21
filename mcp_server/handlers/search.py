@@ -4,7 +4,7 @@ import logging
 
 from mcp_server.config import settings
 from mcp_server.db.queries import execute_search_query
-from mcp_server.llm.ollama import OllamaClient
+from mcp_server.llm.ollama import LLMClient
 from .context import ConversationContext, update_context_with_results
 from .agentic import agentic_search, extract_sources
 
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class SearchHandler:
     """Handler for search requests using agentic search."""
     
-    def __init__(self, llm_client: OllamaClient, response_model: OllamaClient = None):
+    def __init__(self, llm_client: LLMClient, response_model: LLMClient = None):
         self.llm_client = llm_client
         self.response_model = response_model or llm_client
     
@@ -49,7 +49,10 @@ class SearchHandler:
             )
             
             # Extract sources from search history
-            sources = extract_sources(result['search_history'], max_sources=3)
+            if result.get('success', True):
+                sources = extract_sources(result['search_history'], max_sources=3)
+            else:
+                sources = []
             
             # Log results
             logger.info(
@@ -118,7 +121,7 @@ class SearchHandler:
 search_handler = None
 
 
-def get_search_handler(llm_client: OllamaClient, response_model: OllamaClient = None) -> SearchHandler:
+def get_search_handler(llm_client: LLMClient, response_model: LLMClient = None) -> SearchHandler:
     """Get or create the search handler singleton."""
     global search_handler
     if search_handler is None:

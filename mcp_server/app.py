@@ -7,7 +7,7 @@ import uuid
 
 from mcp_server.config import settings
 from mcp_server.db.connection import test_connection
-from mcp_server.llm.ollama import OllamaClient
+from mcp_server.llm.ollama import LLMClient
 from mcp_server.handlers.context import create_context
 from mcp_server.handlers.search import get_search_handler
 
@@ -39,8 +39,8 @@ class MCPResponse(BaseModel):
     sources: Optional[List[MCPSource]] = None
     metadata: Optional[Dict[str, Any]] = None
 
-# Initialize Ollama client
-llm_client = OllamaClient(model=settings.LLM_MODEL)
+# Initialize LLM client
+llm_client = LLMClient(model=settings.LLM_MODEL)
 
 @app.on_event("startup")
 async def startup_event():
