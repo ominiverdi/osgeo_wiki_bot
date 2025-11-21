@@ -1,4 +1,4 @@
-# Update mcp_server/app.py
+# mcp_server/app.py
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
@@ -29,9 +29,15 @@ class MCPRequest(BaseModel):
     messages: List[MCPMessage]
     context: Optional[Dict[str, Any]] = None
 
+class MCPSource(BaseModel):
+    title: str
+    url: str
+
 class MCPResponse(BaseModel):
     message: MCPMessage
     context: Optional[Dict[str, Any]] = None
+    sources: Optional[List[MCPSource]] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 # Initialize Ollama client
 llm_client = OllamaClient(model=settings.LLM_MODEL)
@@ -47,17 +53,23 @@ async def startup_event():
         # Initialize search handler
         search_handler = get_search_handler(llm_client)
         await search_handler.initialize()
+        
+        logger.info("MCP server startup complete")
     except Exception as e:
-        logger.error(f"Database connection error: {e}")
+        logger.error(f"Startup error: {e}")
 
 @app.get("/")
 async def root():
     """Root endpoint - server health check."""
-    return {"status": "ok", "service": "OSGeo Wiki MCP Server"}
+    return {
+        "status": "ok",
+        "service": "OSGeo Wiki MCP Server",
+        "version": "2.0-agentic"
+    }
 
 @app.post("/v1", response_model=MCPResponse)
 async def mcp_endpoint(request: MCPRequest):
-    """Main MCP protocol endpoint."""
+    """Main MCP protocol endpoint with agentic search."""
     # Extract the latest user message
     user_messages = [msg for msg in request.messages if msg.role == "user"]
     if not user_messages:
@@ -70,15 +82,40 @@ async def mcp_endpoint(request: MCPRequest):
     if not context.conversation_id:
         context.conversation_id = str(uuid.uuid4())
     
-    # Process the query using the search handler
-    search_handler = get_search_handler(llm_client)
-    response_text, _ = await search_handler.process_query(user_query, context)
+    try:
+        # Process the query using the agentic search handler
+        search_handler = get_search_handler(llm_client)
+        response_text, sources = await search_handler.process_query(user_query, context)
+        
+        # Build metadata
+        metadata = {
+            "search_type": "agentic",
+            "sources_count": len(sources)
+        }
+        
+        # Return MCP-compliant response with sources
+        return MCPResponse(
+            message=MCPMessage(role="assistant", content=response_text),
+            context=context.to_dict(),
+            sources=[MCPSource(**s) for s in sources] if sources else None,
+            metadata=metadata
+        )
     
-    # Return MCP-compliant response
-    return MCPResponse(
-        message=MCPMessage(role="assistant", content=response_text),
-        context=context.to_dict()
-    )
+    except Exception as e:
+        logger.error(f"Error processing query: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        
+        # Return error response
+        return MCPResponse(
+            message=MCPMessage(
+                role="assistant",
+                content="I encountered an error processing your query. Please try again."
+            ),
+            context=context.to_dict(),
+            sources=None,
+            metadata={"error": str(e)}
+        )
 
 if __name__ == "__main__":
     import uvicorn
