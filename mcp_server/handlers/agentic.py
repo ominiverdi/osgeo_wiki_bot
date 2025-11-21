@@ -133,6 +133,10 @@ def extract_sources(search_history: List[Dict[str, Any]], max_sources: int = 3) 
     # Find last search that had results
     for search in reversed(search_history):
         if search['result_count'] > 0:
+            # Skip sources for graph searches
+            if search['action'] == 'search_graph':
+                return []
+
             sources = []
             
             for result in search['results'][:max_sources]:
@@ -225,6 +229,11 @@ async def agentic_search(
 
 Query: {user_query}
 
+QUERY ANALYSIS:
+- If query asks about relationships, connections, or "how X relates to Y" → prefer search_graph
+- If query asks "what is" or definitions → prefer search_semantic or search_fulltext
+- If previous search gave partial results → try different method
+
 ALREADY TRIED:
 {blocked_text}
 
@@ -315,6 +324,18 @@ Provide a clear answer (plain text, not JSON)."""
         results = await db_execute_fn(sql)
         step3_time = time.time() - step3_start
         total_time += step1_time + step2_time + step3_time
+
+        # Deduplicate fulltext results by URL (keeps highest-ranked chunk per page)
+        if decision['action'] == 'search_fulltext' and results:
+            seen_urls = set()
+            deduplicated = []
+            for r in results:
+                url = r.get('url')
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    deduplicated.append(r)
+            results = deduplicated
+            logger.debug(f"Deduplicated {len(results)} unique pages")
         
         logger.info(f"Query returned {len(results)} results in {step3_time*1000:.0f}ms")
         
@@ -372,10 +393,20 @@ Query: {user_query}
 RESULTS:
 {formatted_results}
 
-Answer using ONLY information from these search results. 
-If results don't contain the answer, say "The wiki doesn't have this information."
-Do not use outside knowledge.
+CRITICAL INSTRUCTIONS:
+1. Answer ONLY using the search results above - DO NOT use any other knowledge
+2. If results are graph relationships (like "X is_project_of Y"):
+   - Convert to natural language: "X is a project of Y"
+   - State each unique relationship once only
+   - Synthesize into a clear sentence
+3. If search results are insufficient, say "The wiki has limited information on this"
+4. Keep answer concise: 2-3 sentences for simple queries, max 5 sentences for complex ones
+5. Do NOT repeat the same information multiple times
+
 Provide clear answer (plain text, not JSON)."""
+
+                    logger.debug(f"ANSWER PROMPT - formatted_results length: {len(formatted_results)}")
+                    logger.debug(f"ANSWER PROMPT - formatted_results preview: {formatted_results[:500]}")
 
                     step5_start = time.time()
                     answer = await llm_client.generate(prompt=answer_prompt, temperature=0.7)
@@ -471,10 +502,10 @@ Query: {user_query}
 Table: page_extensions (page_title, wiki_url, resume, keywords, resume_tsv, keywords_tsv)
 
 CRITICAL INSTRUCTIONS:
-1. Title matching gets 2.5 point boost
-2. Use ILIKE for title matching
-3. Search both resume_tsv and keywords_tsv
-4. Return page_title, wiki_url, resume, keywords
+1. Exact title match gets 10.0 point boost
+2. Partial title match gets 2.5 point boost
+3. Use LOWER() for exact comparison
+4. Search both resume_tsv and keywords_tsv
 
 Template:
 SELECT 
@@ -482,7 +513,11 @@ SELECT
     wiki_url,
     resume, 
     keywords,
-    (CASE WHEN page_title ILIKE '%<main_term>%' THEN 2.5 ELSE 0 END +
+    (CASE 
+       WHEN LOWER(page_title) = LOWER('<main_term>') THEN 10.0
+       WHEN page_title ILIKE '%<main_term>%' THEN 2.5
+       ELSE 0 
+     END +
      0.6 * ts_rank(resume_tsv, websearch_to_tsquery('english', '<terms>')) + 
      0.4 * ts_rank(keywords_tsv, websearch_to_tsquery('english', '<terms>'))) as rank
 FROM page_extensions
@@ -507,17 +542,21 @@ Tables:
 - pages (id, title, url)
 
 CRITICAL INSTRUCTIONS:
-1. Title matching gets 2.5 point boost
-2. Use tsv column for ts_rank (NOT chunk_text)
-3. Join: page_chunks.page_id = pages.id
-4. Use ILIKE for title matching
+1. Exact title match gets 10.0 point boost
+2. Partial title match gets 2.5 point boost
+3. Use LOWER() for exact comparison
+4. Use tsv column for ts_rank (NOT chunk_text)
 
 Template:
 SELECT 
     p.title, 
     p.url,
     pc.chunk_text,
-    (CASE WHEN p.title ILIKE '%<main_term>%' THEN 2.5 ELSE 0 END +
+    (CASE 
+       WHEN LOWER(p.title) = LOWER('<main_term>') THEN 10.0
+       WHEN p.title ILIKE '%<main_term>%' THEN 2.5
+       ELSE 0 
+     END +
      ts_rank(pc.tsv, websearch_to_tsquery('english', '<terms>'))) as rank
 FROM page_chunks pc
 JOIN pages p ON pc.page_id = p.id
