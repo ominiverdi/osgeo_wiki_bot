@@ -163,7 +163,8 @@ class MessageHandler:
             Tuple[bool, str]: (is_mentioned, query)
         """
         # ONLY allow full Matrix ID mentions
-        pattern = r'@osgeo-wiki-bot:matrix\.org\s*(.*)'
+        # pattern = r'@osgeo-wiki-bot:matrix\.org\s*(.*)'
+        pattern = r'osgeo-wiki-bot:\s*(.*)'
         
         match = re.search(pattern, message, re.IGNORECASE)
         if match:

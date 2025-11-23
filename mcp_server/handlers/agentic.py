@@ -182,7 +182,8 @@ async def agentic_search(
     llm_client,
     db_execute_fn,
     user_query: str,
-    max_iterations: int = 3
+    max_iterations: int = 3,
+    response_language: str = 'English'
 ) -> Dict[str, Any]:
     """
     Agentic search that tries multiple strategies until finding good answers.
@@ -192,11 +193,12 @@ async def agentic_search(
         db_execute_fn: Function to execute SQL queries (returns list of dicts)
         user_query: User's natural language query
         max_iterations: Maximum search iterations to try
+        response_language: Full language name (e.g. 'English', 'Spanish', 'Italian')
         
     Returns:
         Dict with 'answer', 'iterations', 'total_time_ms', 'search_history'
     """
-    logger.info(f"Starting agentic search for: {user_query}")
+    logger.info(f"Starting agentic search for: {user_query} (language: {response_language})")
     
     # Get current date for temporal context
     current_date = datetime.now().strftime("%Y-%m-%d")
@@ -272,16 +274,26 @@ Return JSON: {{"action": "...", "reasoning": "one sentence, max 20 words"}}"""
                 logger.warning("Chose 'done' but no searches performed")
                 break
             
-            answer_prompt = f"""TODAY'S DATE: {current_date}
+            # Generate answer in specified language
+            answer_prompt = f"""Answer this question in {response_language} language.
+
+TODAY'S DATE: {current_date}
 
 Query: {user_query}
 
-RESULTS:
+Search Results:
 {search_history[-1]['formatted_results']}
 
-Provide a clear answer (plain text, not JSON)."""
+IMPORTANT:
+- Write your entire answer in {response_language} language (not English, unless {response_language} is 'English')
+- Use ONLY information from the search results above
+- Be clear and concise (2-4 sentences)
+- Include the most relevant wiki page URL at the end
+
+Answer in {response_language}:"""
 
             step2_start = time.time()
+            logger.info(f"Generating final answer in {response_language}")
             answer = await llm_client.generate(prompt=answer_prompt, temperature=0.7)
             step2_time = time.time() - step2_start
             total_time += step1_time + step2_time
@@ -302,6 +314,7 @@ Provide a clear answer (plain text, not JSON)."""
             logger.error(f"Unknown action: {decision['action']}")
             break
         
+
         step2_start = time.time()
         sql_response = await llm_client.generate(
             prompt=sql_prompt,
@@ -317,7 +330,8 @@ Provide a clear answer (plain text, not JSON)."""
         sql = re.sub(r'\s*```$', '', sql)
         
         logger.debug(f"Generated SQL in {step2_time*1000:.0f}ms")
-        logger.debug(f"SQL: {sql[:100]}...")
+        logger.info(f"Generated SQL query:")
+        logger.info(f"{sql}")
         
         # STEP 3: Execute SQL
         step3_start = time.time()
@@ -364,7 +378,14 @@ Query: {user_query}
 FOUND:
 {formatted_results}
 
-Can you answer the query with this information?
+CRITICAL EVALUATION:
+- Does this information DIRECTLY answer the SPECIFIC question asked?
+- If user asks about service/project X, do results actually mention X (not a different service Y)?
+- If user asks WHERE something is deployed/located, do results clearly state the location?
+- Partial information or tangentially related topics = can_answer: false
+- Information about wrong/different service = can_answer: false
+
+Can you FULLY and DIRECTLY answer the query with ONLY this information?
 
 Return EXACTLY ONE JSON object:
 {{"can_answer": true or false, "reasoning": "one sentence"}}"""
@@ -385,31 +406,36 @@ Return EXACTLY ONE JSON object:
                 logger.info(f"Can answer: {evaluation['can_answer']} - {evaluation['reasoning']}")
                 
                 if evaluation['can_answer']:
-                    # Generate final answer
-                    answer_prompt = f"""TODAY'S DATE: {current_date}
+                    # Generate final answer in specified language
+                    answer_prompt = f"""Answer this question in {response_language} language.
+
+TODAY'S DATE: {current_date}
 
 Query: {user_query}
 
-RESULTS:
+Search Results:
 {formatted_results}
 
 CRITICAL INSTRUCTIONS:
-1. Answer ONLY using the search results above - DO NOT use any other knowledge
-2. If results are graph relationships (like "X is_project_of Y"):
+1. Write your entire answer in {response_language} language (not English, unless {response_language} is 'English')
+2. Answer ONLY using the search results above - DO NOT use any other knowledge
+3. If results are graph relationships (like "X is_project_of Y"):
    - Convert to natural language: "X is a project of Y"
    - State each unique relationship once only
    - Synthesize into a clear sentence
-3. If search results are insufficient, say "The wiki has limited information on this"
-4. Keep answer concise: 2-3 sentences for simple queries, max 5 sentences for complex ones
-5. Do NOT repeat the same information multiple times
+4. If search results are insufficient, say "The wiki has limited information on this"
+5. Keep answer concise: 2-3 sentences for simple queries, max 5 sentences for complex ones
+6. Do NOT repeat the same information multiple times
+7. Include the most relevant wiki page URL at the end
 
-Provide clear answer (plain text, not JSON)."""
+Answer in {response_language}:"""
 
                     logger.debug(f"ANSWER PROMPT - formatted_results length: {len(formatted_results)}")
                     logger.debug(f"ANSWER PROMPT - formatted_results preview: {formatted_results[:500]}")
 
                     step5_start = time.time()
-                    answer = await llm_client.generate(prompt=answer_prompt, temperature=0.7)
+                    logger.info(f"Generating final answer in {response_language}")
+                    answer = await llm_client.generate(prompt=answer_prompt, temperature=0.3)
                     step5_time = time.time() - step5_start
                     total_time += step5_time
                     
@@ -427,23 +453,55 @@ Provide clear answer (plain text, not JSON)."""
                 logger.error(f"Failed to parse evaluation: {e}")
                 logger.error(f"Response was: {eval_response[:200]}")
     
-    # Max iterations reached
+    # Max iterations reached - generate contextual fallback answer
     logger.warning(f"Max iterations ({max_iterations}) reached")
     
-    # Generate best-effort answer
     if search_history and search_history[-1]['result_count'] > 0:
-        answer_prompt = f"""TODAY'S DATE: {current_date}
+        # We found something, but couldn't confirm it answers the query
+        # Show LLM what was found so it can make intelligent suggestions
+        fallback_prompt = f"""You are answering in {response_language} language.
 
-Query: {user_query}
+User asked: {user_query}
 
-RESULTS (limited search):
+You searched but couldn't find a direct answer. However, you found some related information:
+
 {search_history[-1]['formatted_results']}
 
-Provide answer based on available data (plain text)."""
+Generate a helpful response in {response_language} that:
+1. Says you couldn't find specific/direct information about their exact question
+2. Briefly mentions what related information you DID find (if relevant)
+3. Either:
+   - Suggest they rephrase the question, OR
+   - Ask if they meant something else based on what you found, OR
+   - Provide the partial information as "limited information available"
+4. Be brief (2-3 sentences maximum)
+5. Be helpful and conversational
 
-        answer = await llm_client.generate(prompt=answer_prompt, temperature=0.7)
+IMPORTANT: Write ONLY in {response_language}, NO code, NO formatting.
+
+Response:"""
+
+        logger.info(f"Generating contextual fallback answer in {response_language}")
+        answer = await llm_client.generate(prompt=fallback_prompt, temperature=0.7)
     else:
-        answer = 'Unable to find relevant information in the OSGeo wiki.'
+        # No results found at all - ask to rephrase
+        no_results_prompt = f"""You are answering in {response_language} language.
+
+User asked: {user_query}
+
+You searched but found no relevant information in the OSGeo wiki.
+
+Generate a brief, helpful message in {response_language} that:
+1. Says you couldn't find information about this in the wiki
+2. Suggests they rephrase the question or add more details
+3. Keep it very brief (1-2 sentences)
+
+IMPORTANT: Write ONLY in {response_language}, NO code, NO formatting.
+
+Response:"""
+        
+        logger.info(f"No results found, generating rephrase request in {response_language}")
+        answer = await llm_client.generate(prompt=no_results_prompt, temperature=0.7)
     
     return {
         'answer': answer,

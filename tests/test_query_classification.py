@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# test_separate_classification.py - Test language and type as separate calls
+# test_query_classification.py - Test language detection and OSGeo classification
 import asyncio
 import httpx
 import json
@@ -8,31 +8,93 @@ import time
 
 LLM_SERVER = "http://localhost:8080"
 
-# Subset of test queries for quicker validation
+# Test queries with expected results
+# Expanded test queries with diverse cases
 test_queries = [
-    # Meta - various languages
-    ("are you online?", "meta", "en"),
-    ("who are you?", "meta", "en"),
-    ("¿quién eres?", "meta", "es"),
-    ("¿estás en línea?", "meta", "es"),
-    ("qui es-tu?", "meta", "fr"),
-    ("bonjour", "meta", "fr"),
-    ("wer bist du?", "meta", "de"),
-    ("hallo", "meta", "de"),
+    # === Greetings - various languages ===
+    ("hi", False, "en"),
+    ("hello", False, "en"),
+    ("hey", False, "en"),
+    ("ok", False, "en"),
+    ("thanks", False, "en"),
+    ("hola", False, "es"),
+    ("gracias", False, "es"),
+    ("ciao", False, "it"),
+    ("bonjour", False, "fr"),
+    ("salut", False, "fr"),
+    ("merci", False, "fr"),
+    ("hallo", False, "de"),
+    ("danke", False, "de"),
     
-    # Wiki - various languages
-    ("What is OSGeo?", "wiki", "en"),
-    ("Where was FOSS4G 2022?", "wiki", "en"),
-    ("¿Qué es OSGeo?", "wiki", "es"),
-    ("Explícame sobre GDAL", "wiki", "es"),
-    ("Qu'est-ce que OSGeo?", "wiki", "fr"),
-    ("Où était FOSS4G 2022?", "wiki", "fr"),
-    ("Was ist OSGeo?", "wiki", "de"),
-    ("Wo war FOSS4G 2022?", "wiki", "de"),
+    # === Identity/status questions ===
+    ("who are you?", False, "en"),
+    ("what can you do?", False, "en"),
+    ("are you online?", False, "en"),
+    ("¿quién eres?", False, "es"),
+    ("¿estás en línea?", False, "es"),
+    ("qui es-tu?", False, "fr"),
+    ("wer bist du?", False, "de"),
     
-    # Edge cases
-    ("ok", "meta", "en"),
-    ("OSGeo", "wiki", "en"),
+    # === General tech questions (not OSGeo) ===
+    ("how to learn python", False, "en"),
+    ("what is machine learning", False, "en"),
+    ("best IDE for coding", False, "en"),
+    ("docker tutorial", False, "en"),
+    
+    # === OSGeo projects - direct mentions ===
+    ("What is OSGeo?", True, "en"),
+    ("OSGeo", True, "en"),
+    ("tell me about QGIS", True, "en"),
+    ("GDAL tutorial", True, "en"),
+    ("PostGIS installation", True, "en"),
+    ("how to use GEOS", True, "en"),
+    ("MapServer documentation", True, "en"),
+    ("GeoServer setup", True, "en"),
+    
+    # === OSGeo projects - non-English ===
+    ("¿Qué es OSGeo?", True, "es"),
+    ("Explícame sobre GDAL", True, "es"),
+    ("cómo instalar PostGIS", True, "es"),
+    ("Qu'est-ce que OSGeo?", True, "fr"),
+    ("tutoriel QGIS", True, "fr"),
+    ("Was ist OSGeo?", True, "de"),
+    ("GDAL Dokumentation", True, "de"),
+    
+    # === OSGeo events ===
+    ("Where was FOSS4G 2022?", True, "en"),
+    ("FOSS4G conference", True, "en"),
+    ("Où était FOSS4G 2022?", True, "fr"),
+    ("Wo war FOSS4G 2022?", True, "de"),
+    
+    # === OSGeo community projects ===
+    ("what is OSGeo4W", True, "en"),
+    ("TorchGeo documentation", True, "en"),
+    ("how to use OSGeoLive", True, "en"),
+    
+    # === Geospatial terms (OSGeo-related) ===
+    ("geospatial analysis", True, "en"),
+    ("open source GIS", True, "en"),
+    ("GIS software", True, "en"),
+    
+    # === Ambiguous cases ===
+    ("maps", False, "en"),  # Could go either way, but likely OSGeo context
+    ("database", False, "en"),  # Too general
+    ("Python GIS", True, "en"),  # GIS makes it OSGeo-related
+    
+    # === Comparisons mentioning OSGeo ===
+    ("QGIS vs ArcGIS", True, "en"),
+    ("PostGIS or MongoDB", True, "en"),
+    ("difference between GDAL and Rasterio", True, "en"),
+    
+    # === Questions about OSGeo people/governance ===
+    ("OSGeo board members", True, "en"),
+    ("who founded OSGeo", True, "en"),
+    ("OSGeo Foundation history", True, "en"),
+    
+    # === Edge cases ===
+    ("", False, "en"),  # Empty query
+    ("???", False, "en"),  # Just punctuation
+    ("asdfghjkl", False, "en"),  # Random text
 ]
 
 async def detect_language(query):
@@ -71,17 +133,40 @@ JSON:"""
             return lang_obj.get('language', 'en')
         return 'en'
 
-async def classify_type(query):
-    """Classify query type only."""
-    prompt = f"""Classify this query:
+async def classify_osgeo_related(query, lang='en'):
+    """Determine if query is OSGeo-related."""
+    
+    prompt = f"""OSGeo-related terms and projects include:
+
+OSGeo Official Projects: PostGIS, QGIS, GDAL, OGR, GEOS, PROJ, GeoTools, GeoServer, MapServer, 
+GeoNetwork, pycsw, GeoNode, Marble, gvSIG, pgRouting, GRASS, OrfeoToolBox, deegree, ZOO-Project, 
+OpenLayers, GeoMoose, Mapbender, PyWPS, pygeoapi, OSGeoLive
+
+OSGeo Community Projects: OSGeo4W, Opticks, TorchGeo, mappyfile, ETF, PROJ-JNI, GeoStyler, 
+Open Data Cube, MDAL, actinia, Pronto Raster, OWSLib, FDO, OSSIM, GeoServer Client PHP, Loader, 
+GeoHealthCheck, Portable GIS, TEAM Engine, Giswater, MobilityDB, rasdaman, XYZ, MAPP, GeoExt, 
+GC2, Vidi, GeoWebCache, MapGuide, mapfish, istSOS
+
+OSGeo Terms: FOSS4G, OSGeo Foundation, OSGeo, geospatial, GIS, open source geospatial
+
+Is this query about OSGeo (mentions projects, events, people, technical topics, foundation)?
+Does this query explicitly mention any OSGeo project, event, or term listed above?
+
+Return true ONLY if query mentions OSGeo projects/terms.
+Return false for greetings, general chat, identity questions, exclamations, unclear, ambiguos or nonsense.
+
+NOT OSGeo examples:
+- Greetings: hello, hi, bonjour, hallo, hola, ciao, gracias, merci, danke
+- Identity: who are you, qui es-tu, wer bist du, ¿quién eres?
+- Capability: what can you do, help, aide, hilfe, ayuda
+- Status: are you online, ok
+- Nonsense: ???, asdfghjkl, empty strings
 
 Query: {query}
+Language: {lang}
 
-Types:
-- "meta": About YOU the assistant (who are you, are you online, what can you do, help)
-- "wiki": About OSGeo content (projects, events, people, technical topics, how-to)
 
-Return ONLY JSON: {{"type": "wiki"}}
+Return ONLY JSON: {{"is_osgeo": true}}
 
 JSON:"""
     
@@ -105,78 +190,93 @@ JSON:"""
         
         json_match = re.search(r'\{.*?\}', response_text)
         if json_match:
-            type_obj = json.loads(json_match.group(0))
-            return type_obj.get('type', 'wiki')
-        return 'wiki'
+            obj = json.loads(json_match.group(0))
+            return obj.get('is_osgeo', False)
+        return False
 
 async def classify_query(query):
-    """Run both classification tasks separately."""
-    # Run in parallel
-    lang_task = detect_language(query)
-    type_task = classify_type(query)
+    """Run classification: language first, then check if OSGeo-related."""
     
-    lang, qtype = await asyncio.gather(lang_task, type_task)
+    # Handle empty queries
+    query_stripped = query.strip()
+    if not query_stripped:
+        return {"language": "en", "is_osgeo": False}
+
+    # Check if query contains any alphanumeric characters
+    if not any(c.isalnum() for c in query_stripped):
+        return {"language": "en", "is_osgeo": False}
     
-    return {"language": lang, "type": qtype}
+    # Detect language first
+    lang = await detect_language(query_stripped)
+    
+    # Check if OSGeo-related
+    is_osgeo = await classify_osgeo_related(query_stripped, lang)
+    
+    return {"language": lang, "is_osgeo": is_osgeo}
 
 async def main():
-    print("Separate Classification Test (Parallel Execution)")
+    print("OSGeo Classification Test (Sequential: Language → OSGeo Check)")
     print("=" * 90)
     
     start_time = time.time()
     
-    meta_correct = 0
-    wiki_correct = 0
+    non_osgeo_correct = 0
+    osgeo_correct = 0
     lang_correct = 0
-    total_meta = 0
-    total_wiki = 0
+    total_non_osgeo = 0
+    total_osgeo = 0
     
     errors = []
     
-    for query, expected_type, expected_lang in test_queries:
+    for query, expected_is_osgeo, expected_lang in test_queries:
         classification = await classify_query(query)
         
-        type_match = classification['type'] == expected_type
+        osgeo_match = classification['is_osgeo'] == expected_is_osgeo
         lang_match = classification['language'] == expected_lang
         
-        if expected_type == "meta":
-            total_meta += 1
-            if type_match:
-                meta_correct += 1
+        if expected_is_osgeo:
+            total_osgeo += 1
+            if osgeo_match:
+                osgeo_correct += 1
         else:
-            total_wiki += 1
-            if type_match:
-                wiki_correct += 1
+            total_non_osgeo += 1
+            if osgeo_match:
+                non_osgeo_correct += 1
         
         if lang_match:
             lang_correct += 1
         
-        mark = "✓" if (type_match and lang_match) else "✗"
+        mark = "✓" if (osgeo_match and lang_match) else "✗"
         
-        if not (type_match and lang_match):
+        if not (osgeo_match and lang_match):
             errors.append({
                 'query': query,
-                'expected': f"{expected_type}/{expected_lang}",
-                'got': f"{classification['type']}/{classification['language']}"
+                'expected': f"{'OSGeo' if expected_is_osgeo else 'non-OSGeo'}/{expected_lang}",
+                'got': f"{'OSGeo' if classification['is_osgeo'] else 'non-OSGeo'}/{classification['language']}"
             })
         
-        print(f"{mark} {query[:40]:<40} -> {classification['type']:<6} ({classification['language']}) "
-              f"[expect: {expected_type}/{expected_lang}]")
+        osgeo_str = "OSGeo" if classification['is_osgeo'] else "non-OSGeo"
+        expected_str = "OSGeo" if expected_is_osgeo else "non-OSGeo"
+        
+        print(f"{mark} {query[:40]:<40} -> {osgeo_str:<10} ({classification['language']}) "
+              f"[expect: {expected_str}/{expected_lang}]")
     
     elapsed = time.time() - start_time
     
     print("=" * 90)
-    print(f"Meta questions: {meta_correct}/{total_meta} correct ({meta_correct/total_meta*100:.1f}%)")
-    print(f"Wiki questions: {wiki_correct}/{total_wiki} correct ({wiki_correct/total_wiki*100:.1f}%)")
+    print(f"Non-OSGeo questions: {non_osgeo_correct}/{total_non_osgeo} correct ({non_osgeo_correct/total_non_osgeo*100:.1f}%)")
+    print(f"OSGeo questions: {osgeo_correct}/{total_osgeo} correct ({osgeo_correct/total_osgeo*100:.1f}%)")
     print(f"Language detection: {lang_correct}/{len(test_queries)} correct ({lang_correct/len(test_queries)*100:.1f}%)")
-    print(f"Overall accuracy: {(meta_correct + wiki_correct)/len(test_queries)*100:.1f}%")
+    print(f"Overall accuracy: {(non_osgeo_correct + osgeo_correct)/len(test_queries)*100:.1f}%")
     print(f"Total time: {elapsed:.1f}s ({elapsed/len(test_queries)*1000:.0f}ms per query)")
-    print(f"Note: Calls run in parallel, so time ~= single call time")
+    print(f"Note: Sequential execution - language detected first, then OSGeo check")
     
     if errors:
         print(f"\nErrors ({len(errors)}):")
         for err in errors:
             print(f"  - '{err['query']}' expected {err['expected']}, got {err['got']}")
+    
+    
 
 if __name__ == "__main__":
     asyncio.run(main())
