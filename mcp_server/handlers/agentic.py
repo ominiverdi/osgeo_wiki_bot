@@ -359,7 +359,9 @@ Answer in {response_language}:"""
         else:
             search_type = decision['action'].replace('search_', '')
             formatted_results = format_results_for_llm(results, search_type)
-        
+            logger.info(f"FORMATTED RESULTS LENGTH: {len(formatted_results)}")
+            logger.info(f"FORMATTED RESULTS:\n{formatted_results}")
+
         # Save to history
         search_history.append({
             'iteration': iteration,
@@ -380,11 +382,10 @@ FOUND:
 {formatted_results}
 
 CRITICAL EVALUATION:
-- Does this information DIRECTLY answer the SPECIFIC question asked?
-- If user asks about service/project X, do results actually mention X (not a different service Y)?
-- If user asks WHERE something is deployed/located, do results clearly state the location?
-- Partial information or tangentially related topics = can_answer: false
-- Information about wrong/different service = can_answer: false
+- Check result #1 FIRST - it has highest relevance score
+- For "what is X?" queries: Look for "X is a/an..." definitions in result #1
+- If ANY result directly answers the query → can_answer: true
+- Tangential info or wrong service → can_answer: false
 
 SPECIAL CASES FOR "WHO IS" QUERIES:
 - Graph relationships showing identity (is_alias_of, is_member_of, lives_at, works_at) ARE sufficient
