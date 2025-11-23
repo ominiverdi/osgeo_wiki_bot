@@ -528,6 +528,9 @@ def _create_sql_prompt(action: str, user_query: str) -> Optional[str]:
 
 Query: {user_query}
 
+IMPORTANT: Entity names are in English. If the query is in another language,
+translate the search terms to English before generating SQL.
+
 Tables: 
 - entities (id, entity_type, entity_name)
 - entity_relationships (subject_id, predicate, object_id, source_page_id)
@@ -556,6 +559,9 @@ Return ONLY the SQL, no explanation."""
         return f"""Generate SQL for semantic search using page summaries.
 
 Query: {user_query}
+
+IMPORTANT: The wiki content is in English. If the query is in another language, 
+translate the search terms to English before generating SQL.
 
 Table: page_extensions (page_title, wiki_url, resume, keywords, resume_tsv, keywords_tsv)
 
@@ -594,6 +600,9 @@ Return ONLY the SQL, no explanation."""
         return f"""Generate SQL for fulltext search using page chunks.
 
 Query: {user_query}
+
+IMPORTANT: The wiki content is in English. If the query is in another language,
+translate the search terms to English before generating SQL.
 
 Tables: 
 - page_chunks (page_id, chunk_text, tsv)
