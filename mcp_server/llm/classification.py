@@ -31,6 +31,9 @@ GC2, Vidi, GeoWebCache, MapGuide, mapfish, istSOS
 OSGeo Infrastructure: osgeo servers (osgeo6, osgeo7, osgeo8, etc), matrix service, IRC, 
 mailing lists, wiki hosting, infrastructure, deployment, hosting services
 
+OSGeo People & Community: OSGeo users, OSGeo members, wiki users, OSGeo contributors, 
+OSGeo community members, board members, charter members, people in OSGeo
+
 OSGeo Terms: FOSS4G, OSGeo Foundation, OSGeo, geospatial, GIS, open source geospatial"""
 
 
@@ -105,9 +108,11 @@ async def classify_osgeo_related(query: str, lang: str = 'en') -> bool:
     prompt = f"""{OSGEO_CONTEXT}
 
 Is this query about OSGeo (mentions projects, events, people, technical topics, foundation)?
-Does this query explicitly mention any OSGeo project, event, or term listed above?
+Does this query mention any OSGeo project, event, term, OR ask about wiki users/contributors?
 
-Return true ONLY if query mentions OSGeo projects/terms.
+Return true if:
+- Query mentions OSGeo projects/terms/people
+- Query asks about a wiki user (e.g., "who is X", "tell me about user Y")
 Return false for greetings, general chat, identity questions, exclamations or nonsense.
 
 NOT OSGeo: greetings (hello, hi, bonjour, hallo), 

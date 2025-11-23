@@ -110,7 +110,8 @@ def format_results_for_llm(results: List[Dict[str, Any]], result_type: str) -> s
             subj = r.get('subject', '')
             pred = r.get('predicate', '')
             obj = r.get('object', '')
-            lines.append(f"{i}. {subj} {pred} {obj}")
+            url = r.get('source_page_url', '')
+            lines.append(f"{i}. {subj} {pred} {obj} (source: {url})")
         elif result_type == 'fulltext':
             title = r.get('title', 'Unknown')
             text = r.get('chunk_text', '')
@@ -385,6 +386,11 @@ CRITICAL EVALUATION:
 - Partial information or tangentially related topics = can_answer: false
 - Information about wrong/different service = can_answer: false
 
+SPECIAL CASES FOR "WHO IS" QUERIES:
+- Graph relationships showing identity (is_alias_of, is_member_of, lives_at, works_at) ARE sufficient
+- Relationships showing person's connections/affiliations answer who they are
+- Example: "X is_alias_of Y" + "X lives_at Z" = complete answer about X
+
 Can you FULLY and DIRECTLY answer the query with ONLY this information?
 
 Return EXACTLY ONE JSON object:
@@ -427,6 +433,14 @@ CRITICAL INSTRUCTIONS:
 5. Keep answer concise: 2-3 sentences for simple queries, max 5 sentences for complex ones
 6. Do NOT repeat the same information multiple times
 7. Include the most relevant wiki page URL at the end
+
+CRITICAL URL RULES:
+- URLs MUST come from the search results above
+- NEVER invent or guess URLs
+- All URLs are from wiki.osgeo.org (OSGeo wiki, NOT Wikipedia)
+- If graph results: use source_page_url
+- If semantic results: use wiki_url
+- If fulltext results: use url
 
 Answer in {response_language}:"""
 
@@ -528,8 +542,15 @@ def _create_sql_prompt(action: str, user_query: str) -> Optional[str]:
 
 Query: {user_query}
 
-IMPORTANT: Entity names are in English. If the query is in another language,
-translate the search terms to English before generating SQL.
+
+
+IMPORTANT: Entity names are in English. If the query is in another language, translate the search terms to English before generating SQL. 
+
+CRITICAL: Entity name matching rules:
+- Use FULL entity names in ILIKE patterns - never truncate
+- Example: searching for "ominiverdi" → use ILIKE '%ominiverdi%'
+- Example: searching for "MapServer" → use ILIKE '%MapServer%'  
+- Do NOT shorten: "ominiverdi" must stay "ominiverdi", never becomes "omini" or "verdi"
 
 Tables: 
 - entities (id, entity_type, entity_name)
