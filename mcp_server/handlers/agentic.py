@@ -104,8 +104,13 @@ def format_results_for_llm(results: List[Dict[str, Any]], result_type: str) -> s
     for i, r in enumerate(results[:5], 1):
         if result_type == 'semantic':
             title = r.get('page_title', 'Unknown')
-            resume = r.get('resume', '')
+            resume = r.get('resume', '')[:400]
             lines.append(f"{i}. {title}: {resume}")
+        elif result_type == 'title':
+            title = r.get('page_title', 'Unknown')
+            url = r.get('wiki_url', '')
+            preview = r.get('resume_preview', '')
+            lines.append(f"{i}. {title}: {preview} ({url})")
         elif result_type == 'graph':
             subj = r.get('subject', '')
             pred = r.get('predicate', '')
@@ -114,7 +119,7 @@ def format_results_for_llm(results: List[Dict[str, Any]], result_type: str) -> s
             lines.append(f"{i}. {subj} {pred} {obj} (source: {url})")
         elif result_type == 'fulltext':
             title = r.get('title', 'Unknown')
-            text = r.get('chunk_text', '')
+            text = r.get('chunk_text', '')[:400]
             lines.append(f"{i}. {title}: {text}")
     
     return "\n".join(lines)
@@ -214,7 +219,7 @@ async def agentic_search(
         blocked = [s['action'] for s in search_history if s['action'] != 'done']
         
         # Build available actions
-        all_actions = ['search_semantic', 'search_graph', 'search_fulltext', 'done']
+        all_actions = ['search_title', 'search_semantic', 'search_graph', 'search_fulltext', 'done']
         available = [a for a in all_actions if a not in blocked]
         
         # Build results summary for LLM
@@ -233,6 +238,7 @@ async def agentic_search(
 Query: {user_query}
 
 QUERY ANALYSIS:
+- If looking for a specific page or topic by name → prefer search_title
 - If query asks about relationships, connections, or "how X relates to Y" → prefer search_graph
 - If query asks "what is" or definitions → prefer search_semantic or search_fulltext
 - If previous search gave partial results → try different method
@@ -383,16 +389,22 @@ FOUND:
 
 CRITICAL EVALUATION:
 - Check result #1 FIRST - it has highest relevance score
-- For "what is X?" queries: Look for "X is a/an..." definitions in result #1
-- If ANY result directly answers the query → can_answer: true
-- Tangential info or wrong service → can_answer: false
+- Previews are TRUNCATED - if a page appears relevant, the full content likely has the answer
 
-SPECIAL CASES FOR "WHO IS" QUERIES:
-- Graph relationships showing identity (is_alias_of, is_member_of, lives_at, works_at) ARE sufficient
-- Relationships showing person's connections/affiliations answer who they are
-- Example: "X is_alias_of Y" + "X lives_at Z" = complete answer about X
+MATCH BY QUERY TYPE:
+- "how to X" / "steps to X" → a page ABOUT X or dedicated to X is sufficient
+- "what is X" → a page named X or describing X is sufficient  
+- "who is X" → a page about X, or graph relationships (is_alias_of, works_at, lives_at) are sufficient
+- "where is X" / "when is X" → a page containing X info is sufficient
 
-Can you FULLY and DIRECTLY answer the query with ONLY this information?
+ACCEPT if:
+- Page title matches the topic being asked about
+- Preview indicates the page is ABOUT the queried topic
+- Graph relationships directly relate to the query
+
+REJECT only if:
+- Results are clearly about a DIFFERENT topic
+- No result has any connection to the query subject
 
 Return EXACTLY ONE JSON object:
 {{"can_answer": true or false, "reasoning": "one sentence"}}"""
@@ -538,7 +550,36 @@ def _create_sql_prompt(action: str, user_query: str) -> Optional[str]:
     Returns:
         SQL generation prompt or None if action unknown
     """
-    if action == 'search_graph':
+    if action == 'search_title':
+        return f"""Generate SQL to search page titles.
+
+    Query: {user_query}
+
+    IMPORTANT: Extract 1-2 key topic terms from the query.
+    AVOID: action words (add, create, how), broad terms (osgeo, wiki, foundation, site).
+    LOOK FOR: the specific feature, tool, or concept name.
+
+    Table: page_extensions (page_title, wiki_url, resume)
+
+    Template:
+    SELECT 
+        page_title,
+        wiki_url,
+        LEFT(resume, 200) as resume_preview,
+        (CASE 
+        WHEN LOWER(page_title) = LOWER('<term>') THEN 10.0
+        WHEN page_title ILIKE '%<term>%' THEN 2.5
+        ELSE 0 
+        END) as rank
+    FROM page_extensions
+    WHERE page_title ILIKE '%<term1>%' OR page_title ILIKE '%<term2>%'
+    ORDER BY rank DESC, LENGTH(page_title) ASC
+    LIMIT 3;
+
+
+    Return ONLY the SQL, no explanation."""
+
+    elif action == 'search_graph':
         return f"""Generate SQL for entity relationships.
 
 Query: {user_query}
@@ -549,9 +590,8 @@ IMPORTANT: Entity names are in English. If the query is in another language, tra
 
 CRITICAL: Entity name matching rules:
 - Use FULL entity names in ILIKE patterns - never truncate
-- Example: searching for "ominiverdi" → use ILIKE '%ominiverdi%'
-- Example: searching for "MapServer" → use ILIKE '%MapServer%'  
-- Do NOT shorten: "ominiverdi" must stay "ominiverdi", never becomes "omini" or "verdi"
+- Example: searching for "foo_bar" → use ILIKE '%foo_bar%'
+- Do NOT shorten names: "foo_bar" must stay "foo_bar", never becomes "foo" or "bar"
 
 Tables: 
 - entities (id, entity_type, entity_name)
@@ -584,6 +624,8 @@ Query: {user_query}
 
 IMPORTANT: The wiki content is in English. If the query is in another language, 
 translate the search terms to English before generating SQL.
+
+TERM EXTRACTION: When the query contains capitalized phrases or terms that appear to be feature/product names (e.g., two or more capitalized words together), include them verbatim in the search. Do not rephrase.
 
 Table: page_extensions (page_title, wiki_url, resume, keywords, resume_tsv, keywords_tsv)
 
@@ -626,6 +668,8 @@ Query: {user_query}
 IMPORTANT: The wiki content is in English. If the query is in another language,
 translate the search terms to English before generating SQL.
 
+TERM EXTRACTION: When the query contains capitalized phrases or terms that appear to be feature/product names (e.g., two or more capitalized words together), include them verbatim in the search. Do not rephrase.
+
 Tables: 
 - page_chunks (page_id, chunk_text, tsv)
 - pages (id, title, url)
@@ -652,7 +696,7 @@ JOIN pages p ON pc.page_id = p.id
 WHERE pc.tsv @@ websearch_to_tsquery('english', '<terms>')
    OR p.title ILIKE '%<main_term>%'
 ORDER BY rank DESC
-LIMIT 5;
+LIMIT 2;
 
 Replace <main_term> with the primary search term.
 Replace <terms> with full search terms.
