@@ -1,10 +1,10 @@
-# OSGeo Wiki Bot
+# OSGeo Wiki Database
 
-A Matrix chat bot that answers questions about OSGeo wiki content using PostgreSQL full-text search and LLM-powered responses.
+A PostgreSQL database for OSGeo wiki content with full-text search capabilities, entity extraction, and content analysis tools.
 
 ## Project Overview
 
-This bot crawls the OSGeo wiki, processes content into searchable chunks, and enables natural language queries through a Matrix chat interface. It provides concise, contextual answers to questions about OSGeo projects, events, governance, and community activities.
+This project crawls the OSGeo wiki, processes content into searchable chunks, and stores it in a PostgreSQL database optimized for full-text search. It provides the data layer that can be integrated with external clients (chatbots, search interfaces, etc.).
 
 ## Architecture
 
@@ -12,42 +12,44 @@ This bot crawls the OSGeo wiki, processes content into searchable chunks, and en
 
 - **Crawler**: Extracts content from wiki.osgeo.org
 - **Database**: PostgreSQL with full-text search capabilities
-- **MCP Server**: Model Context Protocol server that processes queries
-- **LLM Integration**: Uses Ollama for SQL generation and response formatting
+- **Entity Extraction**: Identifies and indexes people, projects, and organizations
+- **Analysis Tools**: Scripts for evaluating search quality and content metrics
 
 ### Data Flow
 
 1. **Crawling**: Python crawler extracts content from OSGeo wiki
-2. **Processing**: Content analyzed and divided into 500-character chunks
-3. **Storage**: Data indexed in PostgreSQL with full-text search vectors
-4. **Query Processing**:
-   - User query received via Matrix
-   - LLM generates optimized PostgreSQL search query
-   - Database returns relevant content chunks
-   - LLM transforms chunks into coherent, concise response
-5. **Context Management**: System tracks conversation for follow-up questions
+2. **Processing**: Content analyzed and divided into chunks
+3. **Entity Extraction**: Named entities identified and linked
+4. **Storage**: Data indexed in PostgreSQL with full-text search vectors
+5. **Integration**: External clients query the database directly
 
 ## Key Features
 
-- **Intelligent Search**: Uses PostgreSQL's full-text search with LLM-optimized queries
-- **Conversation Context**: Maintains history for coherent multi-turn interactions
-- **Category-Aware**: Boosts relevance based on content categories
-- **Concise Responses**: Generates chat-friendly answers from search results
+- **Full-Text Search**: PostgreSQL tsvector indexing for efficient text search
+- **Content Chunking**: Optimized chunk sizes for search precision
+- **Entity Recognition**: Extraction of people, projects, events, and organizations
+- **Category Classification**: Wiki categories preserved for filtering
+- **Graph Relationships**: Entity connections for contextual queries
 
-## Database Design
+## Database Schema
 
-- **Content Chunking**: 500-character chunks for optimal search precision
-- **Full-Text Indexing**: Automatic text vector generation using PostgreSQL triggers
-- **Category Classification**: Leverages wiki categories for better search filtering
+### Core Tables
+
+- `wiki_pages` - Full page content and metadata
+- `wiki_chunks` - Searchable content chunks with tsvector indexes
+- `wiki_entities` - Extracted named entities
+- `wiki_categories` - Category assignments
+
+### Extensions
+
+- `extension_*` tables for additional entity types and relationships
 
 ## Setup and Usage
 
 ### Prerequisites
 
 - Python 3.9+
-- PostgreSQL 12+
-- Matrix server access
-- Ollama for LLM integration
+- PostgreSQL 12+ with pg_trgm extension
 
 ### Quick Start
 
@@ -57,36 +59,83 @@ python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
+# Configure database connection
+cp .env.template .env
+# Edit .env with your PostgreSQL credentials
+
+# Initialize database schema
+psql -f schema/tables.sql
+psql -f schema/triggers.sql
+psql -f schema/extension.sql
+
 # Crawl wiki content
 python crawler/crawler.py
 
 # Populate database
 python db/populate_wiki_db.py
 
-# Start MCP server
-python run_server.py
-
-# Test with CLI client
-./mcp_client/cli/run.sh "What is OSGeo?"
+# Extract entities
+python db/populate_entities.py
 ```
 
 ## Project Structure
 
 ```
 osgeo_wiki_bot/
-├── analysis/        # Content analysis scripts
+├── analysis/        # Content analysis and search evaluation scripts
 ├── crawler/         # Wiki crawling components
-├── db/              # Database population scripts
-├── mcp_client/      # Matrix client implementation
-├── mcp_server/      # Matrix Chat Protocol server
-│   ├── app.py       # FastAPI application
-│   ├── db/          # Database interaction
-│   ├── handlers/    # Request handlers
-│   ├── llm/         # LLM integration
-│   └── utils/       # Utility functions
-├── schema/          # Database schema definitions
-└── wiki_dump/       # Raw crawled content
+├── db/              # Database population and test scripts
+├── docs/            # Documentation and roadmap
+├── modelfiles/      # Ollama model configurations
+├── schema/          # PostgreSQL schema definitions
+├── tests/           # Query and search tests
+└── wiki_dump/       # Raw crawled content (gitignored)
 ```
+
+## Integration
+
+External clients can query the database using standard PostgreSQL connections. Example search query:
+
+```sql
+SELECT title, content, ts_rank(search_vector, query) AS rank
+FROM wiki_chunks, plainto_tsquery('english', 'FOSS4G conference') AS query
+WHERE search_vector @@ query
+ORDER BY rank DESC
+LIMIT 10;
+```
+
+## Analysis Tools
+
+The `analysis/` directory contains scripts for:
+
+- Search quality evaluation
+- Content metrics and statistics
+- Chunking strategy comparison
+- Entity distribution analysis
+
+## TODO
+
+### Content Sources
+- [ ] Crawl OSGeo Wiki (wiki.osgeo.org) - current
+- [ ] Crawl OSGeo WordPress instances (osgeo.org, blog.osgeo.org)
+- [ ] Incremental updates (detect and fetch only changed content)
+
+### Data Processing
+- [ ] Update content chunks when source pages change
+- [ ] Regenerate semantic embeddings for modified chunks
+- [ ] Update knowledge graph relationships on content changes
+
+### Knowledge Graph
+- [ ] Entity relationship extraction pipeline
+- [ ] Graph update triggers on content modification
+- [ ] Entity deduplication and merging
+
+### Infrastructure
+- [ ] Scheduled crawl jobs
+- [ ] Change detection and notification
+- [ ] Database maintenance and optimization
+
+See [docs/data_pipeline.md](docs/data_pipeline.md) for detailed implementation plans.
 
 ## Contributing
 
