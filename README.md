@@ -196,6 +196,8 @@ The `analysis/` directory contains scripts for:
 
 See [docs/data_pipeline.md](docs/data_pipeline.md) for detailed implementation plans.
 
+See [docs/knowledge_graph.md](docs/knowledge_graph.md) for options on evolving to a full knowledge graph.
+
 ## Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
