@@ -4,6 +4,7 @@ Wiki Sync - Incremental update from OSGeo MediaWiki
 
 Uses the MediaWiki recentchanges API to detect and sync only modified pages.
 Tracks revision IDs to avoid duplicate processing.
+Queues tasks for async processing (chunks, extensions, entities).
 """
 
 import os
@@ -11,13 +12,20 @@ import sys
 import json
 import hashlib
 import logging
+import re
 import requests
+import psycopg2
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from dataclasses import dataclass
+from dotenv import load_dotenv
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Load environment variables
+load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -26,9 +34,11 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 WIKI_API_URL = "https://wiki.osgeo.org/w/api.php"
+WIKI_BASE_URL = "https://wiki.osgeo.org/wiki/"
 DEFAULT_LIMIT = 50
 MAX_RETRIES = 3
 RETRY_DELAY = 5  # seconds
+WIKI_DUMP_PATH = Path(os.getenv("WIKI_DUMP_PATH", "./wiki_dump"))
 
 
 @dataclass
@@ -42,6 +52,65 @@ class PageChange:
     timestamp: str
     user: str
     comment: str = ""
+
+
+def get_db_connection():
+    """Connect to PostgreSQL database."""
+    try:
+        conn = psycopg2.connect(
+            host=os.getenv("DB_HOST", "localhost"),
+            database=os.getenv("DB_NAME", "osgeo_wiki"),
+            user=os.getenv("DB_USER", "postgres"),
+            password=os.getenv("DB_PASSWORD", ""),
+            port=os.getenv("DB_PORT", "5432"),
+        )
+        return conn
+    except psycopg2.Error as e:
+        logger.error(f"Database connection failed: {e}")
+        return None
+
+
+def sanitize_filename(title: str) -> str:
+    """Convert page title to safe filename."""
+    # Replace problematic characters
+    safe = re.sub(r'[<>:"/\\|?*]', "_", title)
+    safe = re.sub(r"\s+", "_", safe)
+    return safe[:200]  # Limit length
+
+
+def html_to_text(html: str) -> str:
+    """Convert HTML to plain text, preserving structure."""
+    from html.parser import HTMLParser
+
+    class TextExtractor(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.text = []
+            self.in_script = False
+            self.in_style = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag in ("script", "style"):
+                self.in_script = True
+            elif tag in ("p", "div", "br", "h1", "h2", "h3", "h4", "h5", "h6", "li"):
+                self.text.append("\n")
+
+        def handle_endtag(self, tag):
+            if tag in ("script", "style"):
+                self.in_script = False
+            elif tag in ("p", "div", "h1", "h2", "h3", "h4", "h5", "h6"):
+                self.text.append("\n")
+
+        def handle_data(self, data):
+            if not self.in_script and not self.in_style:
+                self.text.append(data)
+
+    parser = TextExtractor()
+    parser.feed(html)
+    text = "".join(parser.text)
+    # Clean up multiple newlines
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 class WikiSyncClient:
@@ -193,10 +262,13 @@ class WikiSyncClient:
             return None
 
         parse = response["parse"]
+        html_content = parse.get("text", {}).get("*", "")
+
         return {
             "title": parse.get("title", title),
             "revid": parse.get("revid"),
-            "content": parse.get("text", {}).get("*", ""),
+            "html": html_content,
+            "text": html_to_text(html_content),
             "categories": [c["*"] for c in parse.get("categories", [])],
         }
 
@@ -227,6 +299,7 @@ class WikiSyncClient:
             "pages_updated": 0,
             "pages_created": 0,
             "pages_skipped": 0,
+            "tasks_queued": 0,
             "errors": [],
         }
 
@@ -272,8 +345,9 @@ class WikiSyncClient:
                 # Check if this is new or update
                 is_new = self._get_stored_revid(change.pageid) is None
 
-                # Update database
-                self._update_page(change, page_data)
+                # Update database and queue tasks
+                tasks_queued = self._update_page(change, page_data)
+                stats["tasks_queued"] += tasks_queued
 
                 if is_new:
                     stats["pages_created"] += 1
@@ -286,7 +360,8 @@ class WikiSyncClient:
 
         stats["completed_at"] = datetime.now(timezone.utc).isoformat()
         logger.info(
-            f"Sync complete: {stats['pages_created']} created, {stats['pages_updated']} updated"
+            f"Sync complete: {stats['pages_created']} created, "
+            f"{stats['pages_updated']} updated, {stats['tasks_queued']} tasks queued"
         )
 
         return stats
@@ -309,42 +384,142 @@ class WikiSyncClient:
         return None
 
     def _get_stored_revid(self, pageid: int) -> Optional[int]:
-        """
-        Get the last processed revision ID for a page
-
-        TODO: Implement database lookup
-        """
+        """Get the last processed revision ID for a page."""
         if self.db is None:
             return None
 
-        # TODO: Query source_pages table
-        # SELECT last_revid FROM source_pages
-        # WHERE source_type = 'wiki' AND source_id = %s
-        return None
+        try:
+            with self.db.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT last_revid FROM source_pages
+                    WHERE source_type = 'wiki' AND source_id = %s
+                    """,
+                    (pageid,),
+                )
+                result = cur.fetchone()
+                return result[0] if result else None
+        except psycopg2.Error as e:
+            logger.error(f"Error getting stored revid: {e}")
+            return None
 
-    def _update_page(self, change: PageChange, page_data: dict):
-        """
-        Update page in database
+    def _save_to_wiki_dump(self, change: PageChange, page_data: dict):
+        """Save page content to wiki_dump directory (for compatibility with existing scripts)."""
+        WIKI_DUMP_PATH.mkdir(parents=True, exist_ok=True)
 
-        TODO: Implement database update
+        filename = sanitize_filename(change.title)
+        filepath = WIKI_DUMP_PATH / filename
+
+        # Format similar to existing crawler output
+        content = f"""URL: {WIKI_BASE_URL}{change.title.replace(" ", "_")}
+Title: {page_data["title"]}
+
+Categories:
+{chr(10).join("- " + c for c in page_data["categories"])}
+
+Content:
+{page_data["text"]}
+"""
+        filepath.write_text(content, encoding="utf-8")
+        logger.debug(f"  Saved to {filepath}")
+
+    def _update_page(self, change: PageChange, page_data: dict) -> int:
         """
+        Update page in database and queue processing tasks.
+
+        Stores full content in source_pages table (source of truth for all processing).
+
+        Returns:
+            Number of tasks queued
+        """
+        content_hash = self.compute_content_hash(page_data["text"])
+        url = f"{WIKI_BASE_URL}{change.title.replace(' ', '_')}"
+
+        # Optionally save to wiki_dump for compatibility with legacy scripts
+        if WIKI_DUMP_PATH.exists():
+            self._save_to_wiki_dump(change, page_data)
+
         if self.db is None:
-            logger.warning("No database connection, skipping update")
-            return
+            logger.warning("No database connection, skipping database update")
+            return 0
 
-        content_hash = self.compute_content_hash(page_data["content"])
+        tasks_queued = 0
 
-        # TODO: Implement actual database operations:
-        # 1. Upsert into source_pages
-        # 2. Mark old chunks as outdated
-        # 3. Re-chunk content
-        # 4. Insert new chunks
-        # 5. Update search vectors
-        # 6. Log the update
+        try:
+            with self.db.cursor() as cur:
+                # 1. Upsert into pages table (lightweight reference)
+                cur.execute(
+                    """
+                    INSERT INTO pages (title, url)
+                    VALUES (%s, %s)
+                    ON CONFLICT (url) DO UPDATE SET
+                        title = EXCLUDED.title,
+                        last_crawled = CURRENT_TIMESTAMP
+                    RETURNING id
+                    """,
+                    (page_data["title"], url),
+                )
+                page_id = cur.fetchone()[0]
 
-        logger.info(
-            f"  Updated {change.title} (revid={change.revid}, hash={content_hash[:8]}...)"
-        )
+                # 2. Upsert into source_pages with full content
+                # This is the source of truth - stores latest version of every page
+                cur.execute(
+                    """
+                    INSERT INTO source_pages (
+                        source_type, source_id, title, url, last_revid, 
+                        content_hash, content_text, content_html, categories, last_synced
+                    )
+                    VALUES ('wiki', %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (source_type, source_id) DO UPDATE SET
+                        title = EXCLUDED.title,
+                        url = EXCLUDED.url,
+                        last_revid = EXCLUDED.last_revid,
+                        content_hash = EXCLUDED.content_hash,
+                        content_text = EXCLUDED.content_text,
+                        content_html = EXCLUDED.content_html,
+                        categories = EXCLUDED.categories,
+                        last_synced = CURRENT_TIMESTAMP,
+                        status = 'active'
+                    RETURNING id
+                    """,
+                    (
+                        change.pageid,
+                        page_data["title"],
+                        url,
+                        change.revid,
+                        content_hash,
+                        page_data["text"],
+                        page_data["html"],
+                        page_data["categories"],
+                    ),
+                )
+                source_page_id = cur.fetchone()[0]
+
+                # 3. Queue processing tasks (uses function that avoids duplicates)
+                # Note: entities disabled until smarter extraction is implemented
+                for task_type in ["chunks", "extensions"]:
+                    cur.execute(
+                        "SELECT queue_task(%s, %s, %s, %s)",
+                        (page_id, source_page_id, task_type, 0),
+                    )
+                    queue_id = cur.fetchone()[0]
+                    if queue_id:
+                        tasks_queued += 1
+                        logger.debug(f"  Queued {task_type} task (id={queue_id})")
+
+                self.db.commit()
+
+                logger.info(
+                    f"  Updated {change.title} (revid={change.revid}, "
+                    f"hash={content_hash[:8]}..., tasks={tasks_queued})"
+                )
+
+        except psycopg2.Error as e:
+            self.db.rollback()
+            logger.error(f"Database error updating {change.title}: {e}")
+            raise
+
+        return tasks_queued
 
 
 def main():
@@ -378,16 +553,20 @@ def main():
     else:
         since = datetime.now(timezone.utc) - timedelta(days=args.days)
 
-    # TODO: Initialize database connection
-    # from db.connection import get_connection
-    # db = get_connection()
-    db = None
+    # Initialize database connection
+    db = get_db_connection()
+    if db is None and not args.dry_run:
+        logger.warning("No database connection, running in dry-run mode")
+        args.dry_run = True
 
     client = WikiSyncClient(db_connection=db)
     stats = client.sync(since=since, dry_run=args.dry_run)
 
     print("\nSync Statistics:")
     print(json.dumps(stats, indent=2))
+
+    if db:
+        db.close()
 
 
 if __name__ == "__main__":
