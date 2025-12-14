@@ -1,10 +1,16 @@
 # OSGeo Wiki Database
 
-A PostgreSQL database for OSGeo wiki content with full-text search capabilities, entity extraction, and content analysis tools.
+A PostgreSQL database for OSGeo wiki content, designed to power AI assistants and search interfaces with full-text search, entity extraction, and relationship queries.
 
 ## Project Overview
 
-This project crawls the OSGeo wiki, processes content into searchable chunks, and stores it in a PostgreSQL database optimized for full-text search. It provides the data layer that can be integrated with external clients (chatbots, search interfaces, etc.).
+This project crawls the OSGeo wiki, processes content into searchable chunks, extracts entities and relationships, and stores everything in a PostgreSQL database. It serves as the knowledge backend for AI agents that answer questions about OSGeo projects, people, events, and governance.
+
+**Primary use case**: Powering chatbots and AI assistants (e.g., Matrix bots) that need to answer questions like:
+- "What is QGIS?" (full-text search on summaries)
+- "Who is strk?" (entity lookup with fuzzy matching)
+- "Who is president of OSGeo?" (relationship query by predicate)
+- "List all FOSS4G conferences with their locations" (batch entity info with prefix matching)
 
 ## Architecture
 
@@ -25,24 +31,31 @@ This project crawls the OSGeo wiki, processes content into searchable chunks, an
 
 ## Key Features
 
-- **Full-Text Search**: PostgreSQL tsvector indexing for efficient text search
-- **Content Chunking**: Optimized chunk sizes for search precision
-- **Entity Recognition**: Extraction of people, projects, events, and organizations
-- **Category Classification**: Wiki categories preserved for filtering
-- **Graph Relationships**: Entity connections for contextual queries
+- **Full-Text Search**: PostgreSQL tsvector indexing on content, summaries, and keywords
+- **LLM-Enhanced Summaries**: AI-generated page summaries and keywords for better search relevance
+- **Entity Extraction**: People, projects, organizations, events, and years
+- **Entity Relationships**: Subject-predicate-object triples (e.g., "FOSS4G 2023" -> "located_in" -> "Kosovo")
+- **Fuzzy Matching**: Trigram similarity for typo-tolerant entity search
+- **Incremental Sync**: Track wiki changes via MediaWiki API to keep data fresh
 
 ## Database Schema
 
 ### Core Tables
 
-- `wiki_pages` - Full page content and metadata
-- `wiki_chunks` - Searchable content chunks with tsvector indexes
-- `wiki_entities` - Extracted named entities
-- `wiki_categories` - Category assignments
+- `pages` - Page content and metadata
+- `page_chunks` - Searchable content chunks with tsvector indexes
+- `page_categories` - Category assignments
+- `code_snippets` - Extracted code blocks
 
-### Extensions
+### Entity Tables
 
-- `extension_*` tables for additional entity types and relationships
+- `entities` - Extracted named entities (people, projects, organizations, events)
+- `entity_relationships` - Subject-predicate-object triples linking entities
+
+### Extension Tables
+
+- `page_extensions` - LLM-generated summaries and keywords for improved search
+- `source_pages` - Sync tracking for incremental updates (see `schema/sync_tracking.sql`)
 
 ## Setup and Usage
 
@@ -94,15 +107,61 @@ osgeo_wiki_bot/
 
 ## Integration
 
-External clients can query the database using standard PostgreSQL connections. Example search query:
+External clients query the database using standard PostgreSQL connections. The schema supports three main query patterns:
+
+### 1. Full-Text Search (page content and summaries)
 
 ```sql
-SELECT title, content, ts_rank(search_vector, query) AS rank
-FROM wiki_chunks, plainto_tsquery('english', 'FOSS4G conference') AS query
-WHERE search_vector @@ query
-ORDER BY rank DESC
+-- Search LLM-generated summaries and keywords
+SELECT page_title, url, resume
+FROM page_extensions
+WHERE resume_tsv @@ websearch_to_tsquery('english', 'QGIS geographic information')
+   OR keywords_tsv @@ websearch_to_tsquery('english', 'QGIS geographic information')
+ORDER BY ts_rank(resume_tsv, websearch_to_tsquery('english', 'QGIS')) DESC
+LIMIT 5;
+```
+
+### 2. Entity Search (fuzzy matching)
+
+```sql
+-- Find entities by name with trigram similarity
+SELECT entity_name, entity_type, url
+FROM entities
+WHERE entity_name % 'strk'  -- trigram similarity
+   OR entity_name ILIKE '%strk%'
+ORDER BY similarity(entity_name, 'strk') DESC
 LIMIT 10;
 ```
+
+### 3. Relationship Queries
+
+```sql
+-- Find relationships by predicate (e.g., conference locations)
+SELECT s.entity_name AS subject, r.predicate, o.entity_name AS object
+FROM entity_relationships r
+JOIN entities s ON r.subject_id = s.id
+JOIN entities o ON r.object_id = o.id
+WHERE r.predicate = 'located_in'
+  AND s.entity_name LIKE 'FOSS4G%'
+ORDER BY s.entity_name;
+```
+
+### 4. Batch Entity Info (prefix matching)
+
+```sql
+-- Get all FOSS4G conferences with their locations and years
+SELECT e.entity_name, e.entity_type, r.predicate, o.entity_name AS related_to
+FROM entities e
+JOIN entity_relationships r ON e.id = r.subject_id
+JOIN entities o ON r.object_id = o.id
+WHERE e.entity_name LIKE 'FOSS4G%'
+  AND r.predicate IN ('located_in', 'happened_in')
+ORDER BY e.entity_name, r.predicate;
+```
+
+### Client Integration
+
+See [matrix-llmagent](https://github.com/osgeo/matrix-llmagent) for a reference implementation that uses this database as a knowledge backend for an AI chatbot.
 
 ## Analysis Tools
 
@@ -118,20 +177,20 @@ The `analysis/` directory contains scripts for:
 ### Content Sources
 - [ ] Crawl OSGeo Wiki (wiki.osgeo.org) - current
 - [ ] Crawl OSGeo WordPress instances (osgeo.org, blog.osgeo.org)
-- [ ] Incremental updates (detect and fetch only changed content)
+- [x] Incremental updates (detect and fetch only changed content via MediaWiki API)
 
 ### Data Processing
 - [ ] Update content chunks when source pages change
 - [ ] Regenerate semantic embeddings for modified chunks
-- [ ] Update knowledge graph relationships on content changes
+- [ ] Update entity relationships on content changes
 
-### Knowledge Graph
-- [ ] Entity relationship extraction pipeline
-- [ ] Graph update triggers on content modification
+### Entity Management
+- [ ] Improve entity extraction pipeline
 - [ ] Entity deduplication and merging
+- [ ] Relationship update triggers on content modification
 
 ### Infrastructure
-- [ ] Scheduled crawl jobs
+- [ ] Scheduled sync jobs (cron)
 - [ ] Change detection and notification
 - [ ] Database maintenance and optimization
 
