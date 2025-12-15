@@ -21,11 +21,12 @@ OPENROUTER_API_KEY=your_api_key  # Required for LLM summaries
 
 ## Pipeline Overview
 
-The sync pipeline runs in 4 stages:
+The sync pipeline runs in stages:
 
 | Stage | Script | Description |
 |-------|--------|-------------|
-| 1 | `crawler/wiki_sync.py` | Fetch changed pages from wiki, queue tasks |
+| 1a | `crawler/wiki_sync.py` | Fetch changed pages from wiki, queue tasks |
+| 1b | `crawler/wordpress_sync.py` | Fetch pages from WordPress, queue tasks |
 | 2 | `db/process_chunks.py` | Split content into searchable chunks |
 | 3 | `db/process_extensions.py` | Generate LLM summaries and keywords |
 | 4 | `db/process_entities.py` | Extract entities and relationships (disabled) |
@@ -60,6 +61,39 @@ python3 crawler/wiki_sync.py -v
 - `--days` - Number of days to look back (default: 1)
 - `--dry-run` - Preview changes without updating database
 - `--verbose, -v` - Enable debug logging
+
+### Step 1b: Sync WordPress Pages
+
+Fetch pages from www.osgeo.org and queue processing tasks:
+
+```bash
+# Full sync (all pages)
+python3 crawler/wordpress_sync.py --full
+
+# Sync pages modified in last 7 days (default)
+python3 crawler/wordpress_sync.py
+
+# Sync pages modified in last N days
+python3 crawler/wordpress_sync.py --days=30
+
+# Dry run
+python3 crawler/wordpress_sync.py --dry-run --full
+
+# Verbose output
+python3 crawler/wordpress_sync.py --full -v
+```
+
+**Options:**
+- `--full` - Sync all pages regardless of modification date
+- `--days` - Number of days to look back (default: 7)
+- `--dry-run` - Preview changes without updating database
+- `--verbose, -v` - Enable debug logging
+
+**Notes:**
+- Uses REST API for page metadata, HTML scraping for content
+- Extracts content from `<main>` tag to capture dynamic content
+- ~8 archive template pages have no content and are skipped
+- See [WordPress Integration](wordpress_integration.md) for details
 
 ### Step 2: Process Chunks
 
