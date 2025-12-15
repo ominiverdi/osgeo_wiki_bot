@@ -44,6 +44,28 @@ RETRY_DELAY = 5  # seconds
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
 
+def url_to_source_id(url: str) -> int:
+    """
+    Convert a URL to a stable integer source_id.
+
+    Uses a hash of the URL to generate a consistent integer ID.
+    The source_pages table expects an integer for source_id.
+
+    Args:
+        url: The URL or GUID string to convert
+
+    Returns:
+        A positive integer derived from the URL hash
+    """
+    # Use MD5 hash and take first 8 bytes as integer
+    # This gives us a 64-bit integer, but we'll use only 31 bits
+    # to stay within PostgreSQL integer range (2^31 - 1)
+    hash_bytes = hashlib.md5(url.encode("utf-8")).digest()
+    # Convert first 4 bytes to unsigned int, then mask to 31 bits
+    source_id = int.from_bytes(hash_bytes[:4], "big") & 0x7FFFFFFF
+    return source_id
+
+
 def get_db_connection():
     """Connect to PostgreSQL database."""
     try:
@@ -362,13 +384,16 @@ class PlanetSyncClient:
             return None
 
         try:
+            # Convert URL/GUID to integer source_id
+            source_id = url_to_source_id(entry_id)
+
             with self.db.cursor() as cur:
                 cur.execute(
                     """
                     SELECT content_hash FROM source_pages
                     WHERE source_type = 'planet_post' AND source_id = %s
                     """,
-                    (entry_id,),
+                    (source_id,),
                 )
                 result = cur.fetchone()
                 return result[0] if result else None
@@ -400,6 +425,9 @@ class PlanetSyncClient:
         tasks_queued = 0
 
         try:
+            # Convert URL/GUID to integer source_id
+            source_id = url_to_source_id(entry_id)
+
             with self.db.cursor() as cur:
                 # 1. Upsert into pages table (lightweight reference)
                 cur.execute(
@@ -416,7 +444,7 @@ class PlanetSyncClient:
                 pages_table_id = cur.fetchone()[0]
 
                 # 2. Upsert into source_pages with full content
-                # Note: source_id is the guid from the RSS feed (string)
+                # source_id is derived from hashing the RSS GUID/URL to an integer
                 cur.execute(
                     """
                     INSERT INTO source_pages (
@@ -435,7 +463,7 @@ class PlanetSyncClient:
                     RETURNING id
                     """,
                     (
-                        entry_id,
+                        source_id,
                         title,
                         url,
                         content_hash,
