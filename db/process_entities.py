@@ -43,8 +43,10 @@ WIKI_DUMP_PATH = Path(os.getenv("WIKI_DUMP_PATH", "./wiki_dump"))
 def get_db_connection():
     """Connect to PostgreSQL database."""
     try:
+        # Use None for host to enable Unix socket (peer auth)
+        db_host = os.getenv("DB_HOST", "localhost")
         conn = psycopg2.connect(
-            host=os.getenv("DB_HOST", "localhost"),
+            host=db_host if db_host else None,
             database=os.getenv("DB_NAME", "osgeo_wiki"),
             user=os.getenv("DB_USER", "postgres"),
             password=os.getenv("DB_PASSWORD", ""),
