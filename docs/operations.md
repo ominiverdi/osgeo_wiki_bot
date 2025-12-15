@@ -27,6 +27,7 @@ The sync pipeline runs in stages:
 |-------|--------|-------------|
 | 1a | `crawler/wiki_sync.py` | Fetch changed pages from wiki, queue tasks |
 | 1b | `crawler/wordpress_sync.py` | Fetch pages from WordPress, queue tasks |
+| 1c | `crawler/planet_sync.py` | Fetch blog posts from Planet OSGeo, queue tasks |
 | 2 | `db/process_chunks.py` | Split content into searchable chunks |
 | 3 | `db/process_extensions.py` | Generate LLM summaries and keywords |
 | 4 | `db/process_entities.py` | Extract entities and relationships (disabled) |
@@ -94,6 +95,48 @@ python3 crawler/wordpress_sync.py --full -v
 - Extracts content from `<main>` tag to capture dynamic content
 - ~8 archive template pages have no content and are skipped
 - See [WordPress Integration](wordpress_integration.md) for details
+
+### Step 1c: Sync Planet OSGeo Blog Posts
+
+Fetch blog posts from Planet OSGeo (https://planet.osgeo.org/) RSS feed:
+
+```bash
+# Sync all entries in the feed (typically ~40 recent posts)
+python3 crawler/planet_sync.py --all
+
+# Sync entries from last 30 days (default)
+python3 crawler/planet_sync.py
+
+# Sync entries from last N days
+python3 crawler/planet_sync.py --days=14
+
+# Disable pruning (default: removes entries older than 60 days)
+python3 crawler/planet_sync.py --all --prune-days=0
+
+# Custom prune window
+python3 crawler/planet_sync.py --all --prune-days=90
+
+# Dry run
+python3 crawler/planet_sync.py --dry-run --all
+
+# Verbose output
+python3 crawler/planet_sync.py --all -v
+```
+
+**Options:**
+- `--all` - Sync all entries in the feed (no date filter)
+- `--days` - Only sync entries from last N days (default: 30)
+- `--max` - Maximum entries to process (for testing)
+- `--prune-days` - Remove entries older than N days (default: 60, 0 to disable)
+- `--dry-run` - Preview changes without updating database
+- `--verbose, -v` - Enable debug logging
+
+**Notes:**
+- Planet OSGeo aggregates 100+ community blogs
+- RSS feed contains ~40 most recent posts at any time
+- Rolling window: old entries (>60 days) are automatically pruned
+- Content stored with `source_type='planet_post'`
+- Source blog name extracted from title (e.g., "QGIS Blog: Post Title")
 
 ### Step 2: Process Chunks
 
