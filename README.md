@@ -91,6 +91,8 @@ python db/populate_wiki_db.py
 python db/populate_entities.py
 ```
 
+For incremental updates and production deployment, see [docs/operations.md](docs/operations.md).
+
 ## Project Structure
 
 ```
