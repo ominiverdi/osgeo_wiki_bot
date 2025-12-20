@@ -6,7 +6,7 @@ This document describes the search features available in the OSGeo Wiki Database
 
 ### Full-Text Search
 
-PostgreSQL tsvector-based search for keyword matching.
+PostgreSQL tsvector-based search for keyword matching. NOTE: broken
 
 ```sql
 SELECT title, content, ts_rank(search_vector, query) AS rank
@@ -28,7 +28,7 @@ Trigram-based similarity search for typo tolerance.
 
 ```sql
 SELECT title, similarity(title, 'QQGIS') AS sim
-FROM wiki_pages
+FROM pages
 WHERE title % 'QQGIS'
 ORDER BY sim DESC;
 ```
@@ -117,3 +117,18 @@ def search_with_entities(query: str):
 - Consider `ts_headline` for snippet generation (expensive)
 - Cache frequent queries
 - Monitor slow query log
+
+## Current Indexes (pages)
+
+    "pages_pkey" PRIMARY KEY, btree (id)
+    "pages_url_unique" UNIQUE, btree (url)
+Referenced by:
+    TABLE "code_snippets" CONSTRAINT "code_snippets_page_id_fkey" FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
+    TABLE "entities" CONSTRAINT "entities_source_page_id_fkey" FOREIGN KEY (source_page_id) REFERENCES pages(id)
+    TABLE "entity_relationships" CONSTRAINT "entity_relationships_source_page_id_fkey" FOREIGN KEY (source_page_id) REFERENCES pages(id)
+    TABLE "message_contexts" CONSTRAINT "message_contexts_page_id_fkey" FOREIGN KEY (page_id) REFERENCES pages(id)
+    TABLE "page_categories" CONSTRAINT "page_categories_page_id_fkey" FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
+    TABLE "page_chunks" CONSTRAINT "page_chunks_page_id_fkey" FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
+    TABLE "page_processing_errors" CONSTRAINT "page_processing_errors_page_id_fkey" FOREIGN KEY (page_id) REFERENCES pages(id)
+    TABLE "processing_queue" CONSTRAINT "processing_queue_page_id_fkey" FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
+

@@ -18,7 +18,7 @@ The database uses PostgreSQL with the following extensions:
 
 ### pages
 
-Stores page metadata from source systems.
+Stores page metadata from source systems.  ** Note : is this current?
 
 | Column | Type | Description |
 |--------|------|-------------|

@@ -168,54 +168,51 @@ When entities change:
 
 ```sql
 -- Track source page sync status
-CREATE TABLE source_pages (
-    id SERIAL PRIMARY KEY,
-    source_type TEXT NOT NULL,           -- 'wiki', 'wordpress_page', 'wordpress_post'
-    source_id INTEGER,                   -- pageid from MediaWiki, post ID from WordPress
-    title TEXT NOT NULL,
-    url TEXT,
-    last_revid INTEGER,                  -- Last revision ID we processed
-    content_hash TEXT,                   -- SHA256 of content for change detection
-    last_synced TIMESTAMP,               -- When we last synced this page
-    status TEXT DEFAULT 'active',        -- 'active', 'outdated', 'deleted'
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(source_type, source_id)
+CREATE TABLE public.source_pages (
+    id integer NOT NULL,
+    source_type text NOT NULL,
+      -- 'wiki', 'wordpress_page', 'wordpress_post'
+    source_id integer NOT NULL,
+       -- pageid from MediaWiki, post ID from WordPress
+    title text NOT NULL,
+    url text,
+    last_revid integer,      -- Last revision ID we processed
+    content_hash text,
+        -- SHA256 of content for change detection
+    last_synced timestamp without time zone,
+        -- When we last synced this page
+    status text DEFAULT 'active'::text, -- 'active', 'outdated', 'deleted'
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    content_text text,
+    content_html text,
+    categories text[]
 );
 
 -- Track sync operations
-CREATE TABLE sync_log (
-    id SERIAL PRIMARY KEY,
-    sync_type TEXT NOT NULL,             -- 'incremental', 'full'
-    source_type TEXT NOT NULL,           -- 'wiki', 'wordpress'
-    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    completed_at TIMESTAMP,
-    pages_checked INTEGER DEFAULT 0,
-    pages_updated INTEGER DEFAULT 0,
-    pages_created INTEGER DEFAULT 0,
-    pages_deleted INTEGER DEFAULT 0,
-    errors TEXT[],                       -- Array of error messages
-    status TEXT DEFAULT 'running'        -- 'running', 'completed', 'failed'
+CREATE TABLE public.sync_log (
+    id integer NOT NULL,
+    sync_type text NOT NULL,   -- 'incremental', 'full'
+    source_type text NOT NULL, -- 'wiki', 'wordpress'
+    started_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    completed_at timestamp without time zone,
+    since_timestamp timestamp without time zone,
+    pages_checked integer DEFAULT 0,
+    pages_updated integer DEFAULT 0,
+    pages_created integer DEFAULT 0,
+    pages_deleted integer DEFAULT 0,
+    pages_skipped integer DEFAULT 0,
+    errors text[],            -- Array of error messages
+    status text DEFAULT 'running'::text -- 'running', 'completed', 'failed'
 );
 
+
 -- Track individual page updates
-CREATE TABLE update_log (
-    id SERIAL PRIMARY KEY,
-    sync_id INTEGER REFERENCES sync_log(id),
-    source_page_id INTEGER REFERENCES source_pages(id),
-    update_type TEXT NOT NULL,           -- 'created', 'modified', 'deleted'
-    old_revid INTEGER,
-    new_revid INTEGER,
-    chunks_added INTEGER DEFAULT 0,
-    chunks_removed INTEGER DEFAULT 0,
-    chunks_modified INTEGER DEFAULT 0,
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+
 
 CREATE INDEX idx_source_pages_type_id ON source_pages(source_type, source_id);
 CREATE INDEX idx_source_pages_status ON source_pages(status);
 CREATE INDEX idx_sync_log_started ON sync_log(started_at);
-CREATE INDEX idx_update_log_sync ON update_log(sync_id);
 ```
 
 ## Scheduling
